@@ -23,6 +23,7 @@ Like Stage 3, this compares methods on every photo:
   output/ocr/lines/<photo>_<crop>_<line>.png   each text line as fed to Tesseract
 """
 
+import atexit
 import glob
 import os
 import re
@@ -37,6 +38,7 @@ from pytesseract import Output
 import baseline  # noqa: F401  (sets pytesseract's path to tesseract.exe)
 from baseline import found, normalize
 from label_finder import crop_rotated, find_label_boxes
+from tess_direct import load_engine
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "ocr")
@@ -56,15 +58,32 @@ LINE_PAD = 0.35           # margin added around each line, as a fraction of text
 
 # ---------- OCR helpers ----------
 
+# Tesseract's engine loaded once into this process (see tess_direct.py): ~0.006 s
+# per small image instead of ~0.15 s for pytesseract, which starts tesseract.exe
+# every call. Checked to give identical text on all 228 images this pipeline
+# OCRs. None if the library isn't found -> fall back to pytesseract.
+ENGINE = load_engine()
+if ENGINE is not None:
+    atexit.register(ENGINE.close)   # free Tesseract's memory when Python exits
+
+
 def ocr_with_confidence(img: np.ndarray, config: str) -> tuple[str, float]:
-    """Run Tesseract and return (text, mean word confidence 0-100)."""
-    d = pytesseract.image_to_data(img, config=config, output_type=Output.DICT)
+    """Run Tesseract and return (text, mean word confidence 0-100).
+
+    config is pytesseract-style, e.g. "--psm 7".
+    """
+    if ENGINE is not None:
+        psm = int(re.search(r"--psm (\d+)", config).group(1))
+        pairs = ENGINE.words(img, psm)
+    else:
+        d = pytesseract.image_to_data(img, config=config, output_type=Output.DICT)
+        pairs = [(word, float(conf)) for word, conf in zip(d["text"], d["conf"])]
     words, confs = [], []
-    for word, conf in zip(d["text"], d["conf"]):
+    for word, conf in pairs:
         # conf is -1 for layout entries (blocks/lines) that aren't words.
-        if word.strip() and float(conf) >= 0:
+        if word.strip() and conf >= 0:
             words.append(word)
-            confs.append(float(conf))
+            confs.append(conf)
     return " ".join(words), (float(np.mean(confs)) if confs else 0.0)
 
 

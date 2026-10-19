@@ -21,7 +21,7 @@ Run `evaluate.py` to reproduce; the full tables are written to `output/evaluatio
 | Accepted and **wrong** | **0** |
 | Precision (correct / accepted) | 6/6 (100%) |
 | Sent to review | 6/12, of which 4 already have the correct best guess |
-| Time per photo | 4.5 s mean, 7.9 s max (median of 3 runs, Windows 11 laptop) |
+| Time per photo | 2.4 s mean, 5.3 s max (median of 3 runs, Windows 11 laptop) |
 
 **What each stage added**
 
@@ -86,6 +86,18 @@ right once the line was cut out on its own. Per line:
 - polarity is fixed per line (one crop can contain both dark-on-light and light-on-dark text);
 - each line is resized so the text is ~30 px tall, the size Tesseract is tuned for;
 - whether the crop is upside down is decided **once per crop**, from the summed Tesseract confidence of its 3 widest lines read both ways.
+
+**Calling Tesseract directly (`tess_direct.py`).** pytesseract starts a new
+`tesseract.exe` for every call: it saves the image to a temp file, loads the
+English model, reads, and exits. Profiling showed ~0.15 s per call, mostly that
+overhead, and a photo needs dozens of calls. `tess_direct.py` uses Python's
+`ctypes` to load Tesseract's own library (`libtesseract-5.dll`, installed next to
+`tesseract.exe`) into the Python process **once**, and passes images from memory
+through Tesseract's C API. That's ~0.006 s per small image, about 28× faster.
+It gave **identical text** to pytesseract on all 228 images the pipeline OCRs,
+and identical results on every photo; average OCR time per photo fell from
+3.3 s to 1.1 s. If the library isn't found (e.g. on Mac/Linux), the code falls
+back to pytesseract automatically.
 
 ### Stage 6 – Validation (`validate.py`)
 1. **Barcode candidates**: serial-shaped pieces of the decoded values (the ASUS QR codes hold a URL ending in the serial).
@@ -167,14 +179,14 @@ Every stage saves its intermediate images to `output/` so failures can be inspec
   - `Laptop_2_Vertical`: OCR too far off (4 characters) to confirm the barcode.
   - Steep side angles defeat the barcode reader: the crop corrects rotation but not perspective.
 - **Image quality matters most**: the first set of photos had been downscaled to 900×1600 in transfer. Replacing them with the camera originals (4032×2268) did more for barcode reading than any code change.
-- **Speed**: about 4.5 s per photo, mostly OCR. Each pytesseract call starts a new `tesseract.exe` process (~0.15 s).
+- **Speed**: about 2.4 s per photo. The biggest part is now the barcode step (1.3 s), which decodes the full 9-megapixel photo and, when that fails, a 3× upscale of it. OCR of a large junk crop (e.g. mousepad texture) can still take several seconds.
 
 ## What I would do next
 
 1. **More photos and a held-out set**: tune on one half, measure on the other.
 2. **Perspective correction**: find the label's 4 corners and use `cv2.getPerspectiveTransform` so side-angle barcodes become flat.
 3. **Per-manufacturer serial formats**: e.g. if a format says position 4 is always a digit, an OCR `O` there can be corrected to `0` safely.
-4. **Faster OCR**: call the Tesseract API directly (e.g. `tesserocr`) to avoid starting a process per line.
+4. **Faster barcode step**: decode the small label crops first (0.2 s instead of 1.2 s in testing) and fall back to the full photo only when that fails. Crops alone missed one photo whose label wasn't found.
 
 ## Project layout
 
@@ -184,6 +196,7 @@ baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers 
 barcode_reader.py  Stage 3  read_barcode(): retries + barcode-type filter
 label_finder.py    Stage 4  find_label_boxes(), crop_rotated()
 ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line OCR
+tess_direct.py     Stage 5  TessEngine: Tesseract's C API via ctypes (no process per call)
 validate.py        Stage 6  the pipeline: candidates, pattern check, agreement, CSVs
 evaluate.py        Stage 7  accuracy per stage + timing → output/evaluation/
 photos/            input photos (not committed; see Data)
