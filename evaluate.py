@@ -1,6 +1,6 @@
 """Stage 7: measure accuracy per stage against truth.csv, and time per item.
 
-Run with:  .venv\\Scripts\\python.exe evaluate.py
+Run with:  python evaluate.py   (from the repo folder, with the venv active)
 
 One pass over all photos that runs every stage and measures it the same way,
 so the numbers can be compared side by side. Each stage's own script printed
@@ -14,12 +14,14 @@ Measures (every one compared with truth.csv):
   Stage 6  final decision: accepted & correct, accepted & WRONG, needs review
 
 Timing: the full pipeline (what validate.py runs per photo) is timed RUNS times
-and the median is reported, because single timings on this PC varied by ~20%
+and the median is reported, because single timings on one machine varied by ~20%
 between runs.
 
 Outputs:
   output/evaluation/per_photo.csv   every measurement for every photo
   output/evaluation/summary.md      the summary tables (ready to paste into the README)
+
+analyze.py turns per_photo.csv into figures and confusion matrices.
 """
 
 import os
@@ -37,7 +39,7 @@ import baseline
 from baseline import found
 from barcode_reader import read_barcode
 from label_finder import crop_rotated, find_label_boxes
-from ocr_reader import chars_wrong, get_crops, read_lines, read_whole_crop
+from ocr_reader import closest_match, get_crops, read_lines, read_whole_crop
 from validate import barcode_candidates, decide, ocr_candidates
 
 PHOTOS_DIR = "photos"
@@ -81,12 +83,17 @@ def evaluate_photo(img: np.ndarray, true_serial: str) -> dict[str, Any]:
     both = whole + "\n" + lines
     for name, text in (("whole", whole), ("lines", lines), ("combined", both)):
         r[f"s5_{name}_ok"] = found(true_serial, text)
-        r[f"s5_{name}_wrong"] = chars_wrong(true_serial, text)
+        r[f"s5_{name}_wrong"], closest = closest_match(true_serial, text)
+    r["s5_combined_closest"] = closest   # what OCR read where the serial should be (analyze.py)
 
     # Stage 6: the decision, from exactly what validate.py would see
-    status, serial, source, reason = decide(barcode_candidates(values), *ocr_candidates(both))
-    r.update({"s6_status": status, "s6_serial": serial, "s6_reason": reason,
-              "s6_correct": serial == true_serial})
+    bc = barcode_candidates(values)
+    ocr_lab, ocr_unlab = ocr_candidates(both)
+    status, serial, source, reason = decide(bc, ocr_lab, ocr_unlab)
+    r.update({"s6_status": status, "s6_serial": serial, "s6_source": source, "s6_reason": reason,
+              "s6_correct": serial == true_serial,
+              "s6_barcode_candidates": " ".join(bc),
+              "s6_ocr_labelled": " ".join(ocr_lab), "s6_ocr_unlabelled": " ".join(ocr_unlab)})
     return r
 
 

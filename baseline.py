@@ -1,6 +1,6 @@
 """Stage 2: baseline. Barcode decode + OCR on the full, uncropped photos.
 
-Run with:  .venv\\Scripts\\python.exe baseline.py
+Run with:  python baseline.py   (from the repo folder, with the venv active)
 
 No cropping, no preprocessing beyond grayscale, no tuning. The point is to
 measure how far the libraries get on their own, so later stages have a number
@@ -14,9 +14,9 @@ Outputs (all in output/baseline/):
 
 import os
 import re
-import shutil
 import time
 
+import native_libs  # noqa: I001  (must come before pyzbar: lets it find ZBar on macOS)
 import cv2
 import numpy as np
 import pandas as pd
@@ -29,10 +29,10 @@ OUT_DIR = os.path.join("output", "baseline")
 # One barcode ZBar found: (barcode type, decoded value, (x, y, width, height)).
 Barcode = tuple[str, str, tuple[int, int, int, int]]
 
-# Same fallback as check_setup.py: the Windows installer doesn't add Tesseract to PATH.
-pytesseract.pytesseract.tesseract_cmd = (
-    shutil.which("tesseract") or r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+# pytesseract runs whatever tesseract_cmd names. Point it at the real install
+# (the Windows installer doesn't add Tesseract to PATH). If none is found, keep
+# the default so pytesseract raises its own clear "tesseract is not installed".
+pytesseract.pytesseract.tesseract_cmd = native_libs.find_tesseract() or "tesseract"
 
 
 def normalize(text: str) -> str:

@@ -1,6 +1,6 @@
 """Stage 4: find and crop the label(s) in each photo with classical OpenCV.
 
-Run with:  .venv\\Scripts\\python.exe label_finder.py
+Run with:  python label_finder.py   (from the repo folder, with the venv active)
 
 Why not just threshold for a bright rectangle? Because our labels come in both
 polarities: white label on a black mouse (ASUS), and dark label with white text

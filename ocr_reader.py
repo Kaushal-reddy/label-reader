@@ -1,6 +1,6 @@
 """Stage 5: OCR on the label crops from Stage 4, with preprocessing.
 
-Run with:  .venv\\Scripts\\python.exe ocr_reader.py
+Run with:  python ocr_reader.py   (from the repo folder, with the venv active)
 
 The key finding of this stage: OCR'ing a whole label crop fails when the crop
 contains a barcode or QR code. On Mouse_2 the full crop gave 'aa', but the
@@ -35,7 +35,7 @@ import pandas as pd
 import pytesseract
 from pytesseract import Output
 
-import baseline  # noqa: F401  (sets pytesseract's path to tesseract.exe)
+import baseline  # noqa: F401  (sets pytesseract's path to the tesseract program)
 from baseline import found, normalize
 from label_finder import crop_rotated, find_label_boxes
 from tess_direct import load_engine
@@ -59,7 +59,7 @@ LINE_PAD = 0.35           # margin added around each line, as a fraction of text
 # ---------- OCR helpers ----------
 
 # Tesseract's engine loaded once into this process (see tess_direct.py): ~0.006 s
-# per small image instead of ~0.15 s for pytesseract, which starts tesseract.exe
+# per small image instead of ~0.15 s for pytesseract, which starts a tesseract process
 # every call. Checked to give identical text on all 228 images this pipeline
 # OCRs. None if the library isn't found -> fall back to pytesseract.
 ENGINE = load_engine()
@@ -191,7 +191,7 @@ def read_lines(crop: np.ndarray, save_prefix: str | None = None) -> str:
     To save time it's decided from a sample: the ORIENTATION_SAMPLE widest lines
     are read both ways, the confidences summed, and the remaining lines are then
     read in the winning orientation only. (Every pytesseract call starts a new
-    tesseract.exe, ~0.15 s each, so the number of calls is what costs time.)
+    tesseract process, ~0.15 s each, so the number of calls is what costs time.)
     """
     imgs = [line_image(crop, box) for box in find_text_lines(crop)]
     if save_prefix:
@@ -238,20 +238,29 @@ def levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-def chars_wrong(true_serial: str, text: str) -> int:
-    """How close did OCR get? The fewest character edits needed to turn some
-    serial-length stretch of the OCR text into the true serial.
-    0 = exact, 1 = one character off (e.g. O read instead of 0), etc.
+def closest_match(true_serial: str, text: str) -> tuple[int, str]:
+    """The serial-length stretch of the OCR text closest to the true serial:
+    (characters wrong, that stretch). "" if the text has nothing at all.
     Checked line by line, so a serial is never stitched together across lines.
     """
     t = normalize(true_serial)
-    best = len(t)
+    best, best_s = len(t), ""
     for line in text.splitlines():
         s = normalize(line)
         for L in (len(t) - 1, len(t), len(t) + 1):      # allow one missing/extra char
             for i in range(0, max(1, len(s) - L + 1)):
-                best = min(best, levenshtein(t, s[i:i + L]))
-    return best
+                d = levenshtein(t, s[i:i + L])
+                if d < best:
+                    best, best_s = d, s[i:i + L]
+    return best, best_s
+
+
+def chars_wrong(true_serial: str, text: str) -> int:
+    """How close did OCR get? The fewest character edits needed to turn some
+    serial-length stretch of the OCR text into the true serial.
+    0 = exact, 1 = one character off (e.g. O read instead of 0), etc.
+    """
+    return closest_match(true_serial, text)[0]
 
 
 METHODS = [

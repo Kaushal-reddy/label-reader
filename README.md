@@ -11,7 +11,8 @@ when the barcode and the printed text agree. Everything else is flagged
 ## Results
 
 Measured on 12 photos of 5 items, against hand-typed true serials in `truth.csv`.
-Run `evaluate.py` to reproduce; the full tables are written to `output/evaluation/summary.md`.
+Run `evaluate.py` to reproduce; the full tables are written to `output/evaluation/summary.md`,
+and `analyze.py` turns them into figures and confusion matrices (`output/analysis/report.md`).
 
 **Final decisions**
 
@@ -21,7 +22,7 @@ Run `evaluate.py` to reproduce; the full tables are written to `output/evaluatio
 | Accepted and **wrong** | **0** |
 | Precision (correct / accepted) | 6/6 (100%) |
 | Sent to review | 6/12, of which 4 already have the correct best guess |
-| Time per photo | 2.4 s mean, 5.3 s max (median of 3 runs, Windows 11 laptop) |
+| Time per photo | 2.4 s mean, 5.3 s max on a Windows 11 laptop; 1.5 s mean, 2.6 s max on a MacBook Air (median of 3 runs) |
 
 **What each stage added**
 
@@ -91,13 +92,14 @@ right once the line was cut out on its own. Per line:
 `tesseract.exe` for every call: it saves the image to a temp file, loads the
 English model, reads, and exits. Profiling showed ~0.15 s per call, mostly that
 overhead, and a photo needs dozens of calls. `tess_direct.py` uses Python's
-`ctypes` to load Tesseract's own library (`libtesseract-5.dll`, installed next to
-`tesseract.exe`) into the Python process **once**, and passes images from memory
+`ctypes` to load Tesseract's own library (`libtesseract-5.dll` next to
+`tesseract.exe` on Windows, `libtesseract.dylib` / `libtesseract.so.5` from
+Homebrew / apt) into the Python process **once**, and passes images from memory
 through Tesseract's C API. That's ~0.006 s per small image, about 28× faster.
 It gave **identical text** to pytesseract on all 228 images the pipeline OCRs,
 and identical results on every photo; average OCR time per photo fell from
-3.3 s to 1.1 s. If the library isn't found (e.g. on Mac/Linux), the code falls
-back to pytesseract automatically.
+3.3 s to 1.1 s. If the library can't be loaded, the code falls back to
+pytesseract automatically (`check_setup.py` reports which path is in use).
 
 ### Stage 6 – Validation (`validate.py`)
 1. **Barcode candidates**: serial-shaped pieces of the decoded values (the ASUS QR codes hold a URL ending in the serial).
@@ -111,26 +113,41 @@ saved one wrong serial (`Mouse_1_Sideangle`: OCR read `SCBMNVO00…` instead of 
 
 `truth.csv` is never used to make a decision, only to measure afterwards.
 
-## Setup (Windows)
+## Setup
 
-1. **Python 3.12** and a virtual environment:
-   ```powershell
+Works on Windows, macOS and Linux. You need Python 3.12 or newer, plus two
+native programs, Tesseract 5 and ZBar, which pip can't install.
+
+1. **Native dependencies**
+
+   | OS | Command |
+   |---|---|
+   | Windows | `winget install UB-Mannheim.TesseractOCR` (ZBar ships inside the `pyzbar` package) |
+   | macOS | `brew install tesseract zbar` |
+   | Ubuntu / Debian | `sudo apt install tesseract-ocr libzbar0` |
+
+   The Windows installer doesn't add Tesseract to PATH, and apps started outside a
+   terminal may not see Homebrew's PATH. `native_libs.py` handles both: it checks
+   PATH first, then the standard install folders, and on Apple Silicon Macs
+   points pyzbar at Homebrew's `/opt/homebrew/lib`.
+   On Windows, if importing pyzbar fails, install the Microsoft Visual C++ 2013 redistributable.
+
+2. **Python packages** in a virtual environment:
+
+   ```bash
    python -m venv .venv
-   .venv\Scripts\pip install -r requirements.txt
+   # Windows:        .venv\Scripts\activate
+   # macOS / Linux:  source .venv/bin/activate
+   pip install -r requirements.txt
    ```
-2. **Tesseract 5**: install the Windows build from UB Mannheim (this project used 5.4.0):
-   ```powershell
-   winget install UB-Mannheim.TesseractOCR
+
+3. **Check everything works** (all checks should say `[OK]`):
+
+   ```bash
+   python check_setup.py
    ```
-   The installer doesn't add Tesseract to PATH. The scripts look for `tesseract`
-   on PATH first, then fall back to `C:\Program Files\Tesseract-OCR\tesseract.exe`.
-3. **ZBar**: nothing to install on Windows; the DLL ships inside the `pyzbar` package.
-   (If importing pyzbar fails, install the Microsoft Visual C++ 2013 redistributable.)
-   On macOS: `brew install tesseract zbar`. On Ubuntu: `sudo apt install tesseract-ocr libzbar0`.
-4. Check everything works:
-   ```powershell
-   .venv\Scripts\python.exe check_setup.py
-   ```
+
+All commands below assume the venv is active and you're in the repo folder.
 
 ## Data
 
@@ -161,13 +178,32 @@ With `photos/` and `truth.csv` in place:
 |---|---|---|
 | `python validate.py` | **The pipeline**: reads every photo and decides | `output/results.csv`, `output/needs_review.csv` |
 | `python evaluate.py` | Measures every stage against `truth.csv`, and times it | `output/evaluation/summary.md` |
+| `python analyze.py` | Figures, confusion matrices and tables from `evaluate.py`'s results (see below) | `output/analysis/report.md` |
 | `python baseline.py` | Stage 2: untuned barcode + OCR on raw photos | `output/baseline/` |
 | `python barcode_reader.py` | Stage 3: barcode variant matrix | `output/barcode/variant_matrix.csv` |
 | `python label_finder.py` | Stage 4: label boxes, crops and debug images | `output/labels/boxes/`, `crops/`, `debug/` |
 | `python ocr_reader.py` | Stage 5: OCR method comparison | `output/ocr/variant_matrix.csv`, `text/`, `lines/` |
 
-(Use `.venv\Scripts\python.exe` in place of `python` if the venv isn't activated.)
 Every stage saves its intermediate images to `output/` so failures can be inspected by eye.
+
+### Analysis (`analyze.py`)
+
+Reads `output/evaluation/per_photo.csv` (run `evaluate.py` first; `barcode_reader.py`
+adds the variant figure), prints every table, and writes a PNG + CSV for each to
+`output/analysis/`, all collected in `report.md`. Takes about 2 seconds.
+
+| Figure | Shows |
+|---|---|
+| `stage_accuracy` | Accuracy per stage with 95% Wilson intervals (with 12 photos, they're wide) |
+| `photo_outcomes` | Photo × stage pass/fail grid: where each photo is lost |
+| `decision_confusion` | Accepted / needs review × correct / wrong, plus precision, recall, F1 |
+| `acceptance_policies` | What looser rules would accept, and how many wrong serials they'd let through |
+| `source_agreement` | Barcode vs OCR on the same photo: how often one rescues the other |
+| `ocr_chars_wrong`, `ocr_tolerance` | Characters wrong per OCR method, and photos read within *k* characters |
+| `char_confusion` | Which characters OCR misreads, and as what (from an edit-distance alignment) |
+| `barcode_variants` | Which image variant let ZBar read each photo |
+| `by_condition` | Success by capture condition (glare, side angle, …) parsed from file names |
+| `timing` | Time per photo, split into label finding, barcode and OCR |
 
 ## Limitations
 
@@ -191,7 +227,8 @@ Every stage saves its intermediate images to `output/` so failures can be inspec
 ## Project layout
 
 ```
-check_setup.py     Stage 0  checks OpenCV, pyzbar, pytesseract, pandas
+check_setup.py     Stage 0  checks OpenCV, pyzbar, Tesseract (both paths), pandas, matplotlib
+native_libs.py     setup    finds Tesseract and ZBar on Windows / macOS / Linux
 baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize()/found()
 barcode_reader.py  Stage 3  read_barcode(): retries + barcode-type filter
 label_finder.py    Stage 4  find_label_boxes(), crop_rotated()
@@ -199,6 +236,7 @@ ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line OCR
 tess_direct.py     Stage 5  TessEngine: Tesseract's C API via ctypes (no process per call)
 validate.py        Stage 6  the pipeline: candidates, pattern check, agreement, CSVs
 evaluate.py        Stage 7  accuracy per stage + timing → output/evaluation/
+analyze.py         Stage 8  figures, confusion matrices, tables → output/analysis/
 photos/            input photos (not committed; see Data)
 truth.csv          true serials (not committed); format in truth.example.csv
 output/            everything generated (git-ignored, re-created by the scripts)
