@@ -9,3 +9,6 @@ __pycache__/
 photos/*
 !photos/.gitkeep
 truth.csv
+.DS_Store
+
+.serana/

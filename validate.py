@@ -1,6 +1,6 @@
 """Stage 6: validation. Turn barcode values + OCR text into one decision per photo.
 
-Run with:  .venv\\Scripts\\python.exe validate.py
+Run with:  python validate.py   (from the repo folder, with the venv active)
 
 For each photo:
   1. barcode   Stage 3 reader -> pull serial-shaped values out of what it decoded

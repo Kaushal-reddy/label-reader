@@ -1,17 +1,14 @@
-"""Stage 0: confirm that OpenCV, pyzbar (ZBar), pytesseract (Tesseract) and pandas work.
+"""Stage 0: confirm that OpenCV, pyzbar (ZBar), pytesseract (Tesseract), pandas
+and matplotlib work.
 
-Run with:  .venv\\Scripts\\python.exe check_setup.py
+Run with:  python check_setup.py   (from the repo folder, with the venv active)
 
 Each check runs on its own, so one failure doesn't hide the others.
 The images used here are made in memory just to prove the libraries run.
 They are NOT test data and are never used for accuracy numbers.
 """
 
-import shutil
-
-# Where the UB-Mannheim Windows installer puts tesseract.exe. It does not add
-# itself to PATH, so we fall back to this location if PATH has nothing.
-TESSERACT_FALLBACK = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+import native_libs  # before pyzbar: lets it find ZBar on macOS
 
 
 def check_opencv() -> str:
@@ -24,8 +21,9 @@ def check_opencv() -> str:
 
 
 def check_pyzbar() -> str:
-    # Importing pyzbar.pyzbar is the step that loads libzbar-64.dll. If the DLL
-    # (or the Visual C++ runtime it needs) is missing, the error happens here.
+    # Importing pyzbar.pyzbar is the step that loads the ZBar library
+    # (libzbar-64.dll on Windows, libzbar.dylib / libzbar.so elsewhere). If it's
+    # missing ("Unable to find zbar shared library"), the error happens here.
     from pyzbar import pyzbar
     import numpy as np
 
@@ -43,8 +41,9 @@ def check_tesseract() -> str:
     import pytesseract
 
     # pytesseract is only a wrapper: it saves the image to a temp file, runs
-    # tesseract.exe on it, and reads the text back. So it must find the .exe.
-    exe = shutil.which("tesseract") or TESSERACT_FALLBACK
+    # the tesseract program on it, and reads the text back. So it must find it.
+    exe = native_libs.find_tesseract()
+    assert exe, "tesseract not found on PATH or in the usual install folders (see README Setup)"
     pytesseract.pytesseract.tesseract_cmd = exe
     version = pytesseract.get_tesseract_version()
 
@@ -55,6 +54,24 @@ def check_tesseract() -> str:
     text = pytesseract.image_to_string(img, config="--psm 7").strip()
     assert text == "ABC123", f"expected 'ABC123', OCR returned {text!r}"
     return f"Tesseract {version} at {exe}, read back {text!r}"
+
+
+def check_tess_direct() -> str:
+    # The fast path ocr_reader.py uses: Tesseract's library loaded in-process.
+    # If this fails the pipeline still works, through pytesseract, just slower.
+    import cv2
+    import numpy as np
+
+    from tess_direct import find_library, load_engine
+
+    engine = load_engine()
+    assert engine is not None, "library not loaded; OCR will fall back to pytesseract (slower)"
+    img = np.full((80, 400), 255, dtype=np.uint8)
+    cv2.putText(img, "ABC123", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 2, 0, 4)
+    text = " ".join(word for word, _ in engine.words(img, psm=7))
+    engine.close()
+    assert text == "ABC123", f"expected 'ABC123', OCR returned {text!r}"
+    return f"{find_library()[0]} loaded, read back {text!r}"
 
 
 def check_pandas() -> str:
@@ -71,9 +88,24 @@ def check_pandas() -> str:
     return f"version {pd.__version__}, {path} has columns {expected}, {len(df)} rows"
 
 
+def check_matplotlib() -> str:
+    # analyze.py saves its figures as files, so use the non-interactive
+    # backend: it needs no window system (works over SSH, in CI, etc.).
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    fig.canvas.draw()
+    plt.close(fig)
+    return f"version {matplotlib.__version__}, drew a figure"
+
+
 if __name__ == "__main__":
     checks = [("OpenCV", check_opencv), ("pyzbar", check_pyzbar),
-              ("pytesseract", check_tesseract), ("pandas", check_pandas)]
+              ("pytesseract", check_tesseract), ("tess_direct", check_tess_direct),
+              ("pandas", check_pandas), ("matplotlib", check_matplotlib)]
     failed = 0
     for name, fn in checks:
         try:

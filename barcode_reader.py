@@ -1,6 +1,6 @@
 """Stage 3: barcode reading, with retries on modified images when the plain decode fails.
 
-Run with:  .venv\\Scripts\\python.exe barcode_reader.py
+Run with:  python barcode_reader.py   (from the repo folder, with the venv active)
 
 Idea: ZBar either decodes a barcode or returns nothing (it almost never returns a
 wrong value, because barcodes carry a checksum). So if the plain photo fails we
@@ -17,6 +17,7 @@ so you can see exactly which change rescued which photo:
 import os
 import time
 
+import native_libs  # noqa: F401, I001  (must come before pyzbar: lets it find ZBar on macOS)
 import cv2
 import numpy as np
 import pandas as pd
