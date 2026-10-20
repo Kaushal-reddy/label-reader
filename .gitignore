@@ -12,3 +12,5 @@ truth.csv
 .DS_Store
 
 .serana/
+
+*.log
