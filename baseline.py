@@ -13,6 +13,7 @@ Outputs (all in output/baseline/):
 """
 
 import os
+import sys
 import re
 import time
 
@@ -33,6 +34,34 @@ Barcode = tuple[str, str, tuple[int, int, int, int]]
 # (the Windows installer doesn't add Tesseract to PATH). If none is found, keep
 # the default so pytesseract raises its own clear "tesseract is not installed".
 pytesseract.pytesseract.tesseract_cmd = native_libs.find_tesseract() or "tesseract"
+
+
+def load_truth(folder: str | None = None) -> pd.DataFrame:
+    """The true values: truth.csv for our photos, or <folder>/truth.csv for another dataset.
+
+    Every script takes that folder as an optional argument, e.g.
+    `python evaluate.py photos/ean_dataset`. A dataset's truth.csv may have a
+    `checked` column (values typed by hand and still being checked): only rows
+    marked "yes" are used, so unverified values never count.
+    """
+    if not folder:
+        return pd.read_csv("truth.csv", dtype=str)
+    truth = pd.read_csv(os.path.join(folder, "truth.csv"), dtype=str, keep_default_na=False)
+    # Some CSV editors pad columns with spaces to line them up; drop that.
+    truth.columns = truth.columns.str.strip()
+    truth = truth.apply(lambda col: col.str.strip())
+    if "checked" in truth.columns:
+        skipped = int((truth.checked != "yes").sum())
+        truth = truth[(truth.checked == "yes") & (truth.true_serial != "")]
+        print(f"Using {len(truth)} checked rows ({skipped} not checked yet, skipped)\n")
+    return truth
+
+
+def out_dir_for(folder: str | None, stage: str) -> str:
+    """output/<stage> for our photos, output/<dataset folder name>/<stage> for another dataset."""
+    if folder:
+        return os.path.join("output", os.path.basename(os.path.normpath(folder)), stage)
+    return os.path.join("output", stage)
 
 
 def normalize(text: str) -> str:
@@ -75,16 +104,16 @@ def save_box_image(img: np.ndarray, barcodes: list[Barcode], path: str) -> None:
     cv2.imwrite(path, vis)
 
 
-def main() -> None:
-    os.makedirs(os.path.join(OUT_DIR, "ocr_text"), exist_ok=True)
-    os.makedirs(os.path.join(OUT_DIR, "boxes"), exist_ok=True)
+def main(folder: str | None = None) -> None:
+    photos_dir, out_dir, truth = folder or PHOTOS_DIR, out_dir_for(folder, "baseline"), load_truth(folder)
+    os.makedirs(os.path.join(out_dir, "ocr_text"), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, "boxes"), exist_ok=True)
 
-    truth = pd.read_csv("truth.csv")
     rows = []
 
     for filename, true_serial in zip(truth.filename, truth.true_serial):
         stem = os.path.splitext(filename)[0]
-        img = cv2.imread(os.path.join(PHOTOS_DIR, filename))
+        img = cv2.imread(os.path.join(photos_dir, filename))
         if img is None:
             # cv2.imread returns None instead of raising when the file is missing/unreadable.
             print(f"Could not read {filename}, skipping")
@@ -99,7 +128,7 @@ def main() -> None:
 
         barcode_values = [value for _, value, _ in barcodes]
         barcode_ok = any(found(true_serial, v) for v in barcode_values)
-        save_box_image(img, barcodes, os.path.join(OUT_DIR, "boxes", f"{stem}.jpg"))
+        save_box_image(img, barcodes, os.path.join(out_dir, "boxes", f"{stem}.jpg"))
 
         # --- OCR ---
         # Default settings: English, page segmentation mode 3 (fully automatic
@@ -109,7 +138,7 @@ def main() -> None:
         ocr_s = time.perf_counter() - t0
 
         ocr_ok = found(true_serial, ocr_text)
-        with open(os.path.join(OUT_DIR, "ocr_text", f"{stem}.txt"), "w", encoding="utf-8") as f:
+        with open(os.path.join(out_dir, "ocr_text", f"{stem}.txt"), "w", encoding="utf-8") as f:
             f.write(ocr_text)
 
         rows.append({
@@ -125,7 +154,7 @@ def main() -> None:
         })
 
     df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(OUT_DIR, "results.csv"), index=False)
+    df.to_csv(os.path.join(out_dir, "results.csv"), index=False)
 
     # --- Summary ---
     n = len(df)
@@ -140,4 +169,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

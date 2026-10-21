@@ -9,9 +9,12 @@ For each photo:
                preferring ones written right after "SN" / "S/N"
   3. pattern   a serial must look like one: 10-20 letters/digits, with at least
                one letter and at least two digits
-  4. decide    ACCEPT only when barcode and OCR independently agree, allowing for
+  4. decide    ACCEPT when barcode and OCR independently agree, allowing for
                characters OCR is known to confuse (O/0, A/4, ...). Then output
                the BARCODE's characters: barcodes carry a checksum, OCR doesn't.
+               Or, for a retail product barcode (EAN-13), ACCEPT the barcode
+               alone if its check digit is valid, ZBar read it only one way,
+               and at least two image variants read the same number.
                Anything else -> NEEDS REVIEW, with the reason and best guess.
 
 truth.csv is NOT used to make any decision. It's only read at the very end to
@@ -24,6 +27,7 @@ Outputs:
 """
 
 import os
+import sys
 import re
 import time
 from collections import Counter
@@ -31,7 +35,7 @@ from collections import Counter
 import cv2
 import pandas as pd
 
-from baseline import normalize
+from baseline import load_truth, normalize, out_dir_for
 from barcode_reader import read_barcode
 from ocr_reader import read_ocr
 
@@ -42,6 +46,10 @@ PHOTOS_DIR = "photos"
 # serials, so it would also accept other manufacturers' formats. It rules out
 # words ("CHINA"), short codes ("12M"), dates and pure numbers.
 SERIAL_RE = re.compile(r"^(?=.*[A-Z])(?=(?:.*\d){2})[A-Z0-9]{10,20}$")
+
+# A retail product barcode number: EAN-13. (UPC-A, the 12-digit US version,
+# arrives from ZBar as EAN-13 with a leading 0.)
+PRODUCT_RE = re.compile(r"^\d{13}$")
 
 # Text written right after an "SN" / "S/N" / "S/N:" key on the label.
 # [^A-Z0-9]* allows the ':' and spaces in between.
@@ -54,9 +62,33 @@ CONFUSABLE = str.maketrans({"O": "0", "Q": "0", "D": "0",
                             "I": "1", "L": "1",
                             "Z": "2", "A": "4", "S": "5", "G": "6", "B": "8"})
 
+# A product barcode accepted on its own must have been read the same by at least
+# this many image variants (barcode_reader.CONFIRM_VARIANTS). One read isn't
+# enough: on the 403-image EAN set, 8 single reads had a valid check digit but
+# were the wrong number.
+MIN_AGREEING_VARIANTS = 2
+
 
 def looks_like_serial(s: str) -> bool:
     return bool(SERIAL_RE.match(s))
+
+
+def check_digit_ok(code: str) -> bool:
+    """True if the last digit of an EAN-13 / UPC number is the right check digit.
+
+    Rule: from the right, skipping the check digit itself, weight the digits
+    3, 1, 3, 1, ...; the check digit tops the sum up to a multiple of 10.
+    ZBar already checks this for EAN-13 barcodes. It's checked again here so
+    the rule doesn't depend on which barcode type delivered the number (a QR
+    code holding 13 digits has no such check).
+    """
+    digits = [int(c) for c in code]
+    total = sum(d * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(digits[:-1])))
+    return (10 - total % 10) % 10 == digits[-1]
+
+
+def looks_like_product_code(s: str) -> bool:
+    return bool(PRODUCT_RE.match(s)) and check_digit_ok(s)
 
 
 def same_modulo_confusions(a: str, b: str) -> bool:
@@ -67,12 +99,16 @@ def same_modulo_confusions(a: str, b: str) -> bool:
 def barcode_candidates(values: list[str]) -> list[str]:
     """Serial-shaped strings from decoded barcode values.
 
-    A value can be the serial itself (Code128 on the mice) or a URL whose last
-    part is the serial (ASUS QR: https://qs.asus.com/<serial>). So we
-    split on anything that isn't a letter/digit and test each piece.
+    A value can be the serial itself (Code128 on the mice), a product number
+    (EAN-13 on retail packaging), or a URL whose last part is the serial (ASUS
+    QR: https://qs.asus.com/<serial>). So we split on anything that isn't a
+    letter/digit and test each piece.
     """
     out = []
     for v in values:
+        if looks_like_product_code(v.strip()):
+            out.append(v.strip())      # the whole value is a product number
+            continue
         for piece in re.split(r"[^A-Za-z0-9]+", v.upper()):
             if looks_like_serial(piece):
                 out.append(piece)
@@ -97,8 +133,17 @@ def ocr_candidates(text: str) -> tuple[list[str], list[str]]:
     return [s for s, _ in labelled.most_common()], [s for s, _ in unlabelled.most_common()]
 
 
-def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str]) -> tuple[str, str, str, str]:
-    """Return (status, serial, source, reason). Uses only what was read from the photo."""
+def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str],
+           conflicts: list[str] = (), agreeing: dict[str, int] | None = None
+           ) -> tuple[str, str, str, str]:
+    """Return (status, serial, source, reason). Uses only what was read from the photo.
+
+    conflicts = other values ZBar read from the same barcode(s) and rejected
+    (barcode_reader.resolve); any conflict blocks accepting a barcode on its own.
+    agreeing = value -> how many image variants read it (barcode_reader.confirm);
+    a product barcode needs MIN_AGREEING_VARIANTS to be accepted on its own.
+    """
+    agreeing = agreeing or {}
     # 1) Agreement: any barcode candidate matches any OCR candidate.
     for b in bc:
         for o in ocr_lab + ocr_unlab:
@@ -107,7 +152,28 @@ def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str]) -> tuple[str
             if same_modulo_confusions(b, o):
                 return ("accepted", b, "barcode+ocr",
                         f"barcode and OCR agree except OCR look-alikes (OCR read {o})")
-    # 2) Only one source, or the two disagree -> a person should check.
+    # 2) Product barcode. The only text that could confirm it is the same digits
+    #    printed small under the bars, and OCR can't read those (0 of 14 product
+    #    photos exact). So the barcode stands alone, which is only safe when the
+    #    check digit is valid, ZBar read it one way only (on a curved can it once
+    #    read a second, wrong number that also had a valid check digit), AND more
+    #    than one image variant read it (single wrong reads pass the other two checks).
+    products = list(dict.fromkeys(b for b in bc if looks_like_product_code(b)))
+    if len(products) > 1:
+        return ("needs_review", products[0], "barcode",
+                f"several product barcodes read: {', '.join(products)}")
+    if products and conflicts:
+        return ("needs_review", products[0], "barcode",
+                f"product barcode {products[0]}, but ZBar also read {', '.join(conflicts)} from it")
+    if products and agreeing.get(products[0], 1) < MIN_AGREEING_VARIANTS:
+        return ("needs_review", products[0], "barcode",
+                f"product barcode {products[0]} read by only {agreeing.get(products[0], 1)} "
+                "image variant, so it can't be confirmed")
+    if products:
+        return ("accepted", products[0], "barcode",
+                f"product barcode (EAN-13): check digit valid, read one way only, "
+                f"by {agreeing[products[0]]} image variants")
+    # 3) Only one source, or the two disagree -> a person should check.
     if bc and (ocr_lab or ocr_unlab):
         return ("needs_review", bc[0], "barcode",
                 f"barcode {bc[0]} and OCR {(ocr_lab + ocr_unlab)[0]} disagree")
@@ -120,15 +186,16 @@ def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str]) -> tuple[str
     return "needs_review", "", "", "nothing serial-shaped found"
 
 
-def main() -> None:
-    truth = pd.read_csv("truth.csv")
+def main(folder: str | None = None) -> None:
+    photos_dir, out_dir, truth = folder or PHOTOS_DIR, out_dir_for(folder, ""), load_truth(folder)
+    os.makedirs(out_dir, exist_ok=True)
     rows = []
     for filename in truth.filename:
-        img = cv2.imread(os.path.join(PHOTOS_DIR, filename))
+        img = cv2.imread(os.path.join(photos_dir, filename))
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         t0 = time.perf_counter()
-        values, _ = read_barcode(gray)
+        values, _, conflicts, agreeing = read_barcode(gray)
         t_barcode = time.perf_counter() - t0
         t0 = time.perf_counter()
         text = read_ocr(img)
@@ -136,11 +203,12 @@ def main() -> None:
 
         bc = barcode_candidates(values)
         ocr_lab, ocr_unlab = ocr_candidates(text)
-        status, serial, source, reason = decide(bc, ocr_lab, ocr_unlab)
+        status, serial, source, reason = decide(bc, ocr_lab, ocr_unlab, conflicts, agreeing)
         rows.append({
             "filename": filename, "status": status, "serial": serial,
             "source": source, "reason": reason,
             "barcode_candidates": " ".join(bc),
+            "barcode_conflicts": " ".join(conflicts),
             "ocr_labelled": " ".join(ocr_lab),
             "ocr_unlabelled": " ".join(ocr_unlab),
             "barcode_s": round(t_barcode, 2), "ocr_s": round(t_ocr, 2),
@@ -149,12 +217,12 @@ def main() -> None:
         print(f"{filename:24} {status:13} {serial:17} {reason}")
 
     df = pd.DataFrame(rows)
-    df.to_csv(os.path.join("output", "validation.csv"), index=False)
+    df.to_csv(os.path.join(out_dir, "validation.csv"), index=False)
     acc = df[df.status == "accepted"]
-    acc[["filename", "serial", "source"]].to_csv(os.path.join("output", "results.csv"), index=False)
+    acc[["filename", "serial", "source"]].to_csv(os.path.join(out_dir, "results.csv"), index=False)
     df[df.status != "accepted"][["filename", "serial", "source", "reason"]] \
         .rename(columns={"serial": "best_guess"}) \
-        .to_csv(os.path.join("output", "needs_review.csv"), index=False)
+        .to_csv(os.path.join(out_dir, "needs_review.csv"), index=False)
 
     # Quick check against truth - AFTER all decisions are made.
     t = dict(zip(truth.filename, truth.true_serial))
@@ -168,4 +236,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)
