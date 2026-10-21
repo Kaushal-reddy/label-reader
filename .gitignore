@@ -16,3 +16,5 @@ truth.csv
 .serena/
 
 *.log
+# Asset register (app.py): database and scanned photos hold real serials
+data/
