@@ -32,6 +32,11 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, to_rgb  # noqa: E402
 
+# Print as UTF-8 everywhere. The tables print ✓/✗; macOS/Linux terminals are
+# UTF-8 already, but on Windows Python falls back to the old cp1252 character
+# set when output goes to a file or pipe, which has no ✓ and crashed the run.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 EVAL_CSV = os.path.join("output", "evaluation", "per_photo.csv")
 VARIANTS_CSV = os.path.join("output", "barcode", "variant_matrix.csv")
 OUT_DIR = os.path.join("output", "analysis")
@@ -156,6 +161,7 @@ MEASURES = [
     ("s4_barcode_on_crops_ok", "Barcode on the crops",          "S4"),
     ("s5_whole_ok",            "OCR whole crop, exact",         "S5"),
     ("s5_lines_ok",            "OCR line by line, exact",       "S5"),
+    ("s5_digits_ok",           "OCR barcode digits, exact",     "S5"),
     ("s5_combined_ok",         "OCR combined, exact",           "S5"),
     ("s5_combined_near",       "OCR combined, <=1 char wrong",  "S5"),
     ("s6_accepted_correct",    "Accepted and correct",          "S6"),
@@ -396,7 +402,7 @@ def ocr_methods(df: pd.DataFrame, rep: Report) -> None:
     rep.section("OCR methods: characters wrong per photo",
                 "0 = exact. A missing or junk read counts as the whole serial wrong.")
     methods = [("s5_whole_wrong", "whole crop"), ("s5_lines_wrong", "line by line"),
-               ("s5_combined_wrong", "combined")]
+               ("s5_digits_wrong", "barcode digits"), ("s5_combined_wrong", "combined")]
     t = df[["photo"] + [c for c, _ in methods]].copy()
     t.columns = ["photo"] + [m for _, m in methods]
     rep.table(t, "ocr_chars_wrong")
@@ -410,6 +416,10 @@ def ocr_methods(df: pd.DataFrame, rep: Report) -> None:
 
     # How many photos would count as read if we tolerated k wrong characters?
     ks = list(range(6))
+    # The barcode-digits method only applies to product barcodes, and SERIES has
+    # 3 colours - zip() below would silently drop a 4th line - so it's left out
+    # of this curve. It's in the table and heatmap above.
+    methods = [mc for mc in methods if mc[0] != "s5_digits_wrong"]
     curve = pd.DataFrame({"chars_allowed": ks} |
                          {m: [int((df[c] <= k).sum()) for k in ks] for c, m in methods})
     rep.section("OCR tolerance curve", "Photos whose serial OCR got within k characters.")

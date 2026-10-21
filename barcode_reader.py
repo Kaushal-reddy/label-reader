@@ -11,7 +11,8 @@ This script runs EVERY variant on EVERY photo (not just until the first success)
 so you can see exactly which change rescued which photo:
   output/barcode/variant_matrix.csv   photo x variant table: serial found? (True/False)
   output/barcode/results.csv          what the real reader (stop at first success) returned
-  output/barcode/variants/<photo>/    the image each variant fed to ZBar
+  output/barcode/variants/<photo>/    a preview of the image each variant fed to ZBar
+                                      (shrunk to PREVIEW_MAX_SIDE; ZBar got full size)
 """
 
 import os
@@ -24,10 +25,24 @@ import pandas as pd
 from pyzbar import pyzbar
 from pyzbar.pyzbar import ZBarSymbol
 
-from baseline import found  # same lenient "is the serial in there?" check as Stage 2
+from baseline import found, load_truth  # same lenient "is the serial in there?" check as Stage 2
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "barcode")
+
+# The saved variant images are only for looking at, so they're shrunk to at most
+# this many pixels on the long side. Saving them full size was the slow part of
+# this script: a 3x variant of a 36-megapixel photo is a 329-megapixel image,
+# and JPEG-compressing it took longer than decoding it (~4-5 min per photo).
+PREVIEW_MAX_SIDE = 1600
+
+
+def preview(img: np.ndarray) -> np.ndarray:
+    """A shrunk copy for saving to disk (never bigger than the original)."""
+    scale = PREVIEW_MAX_SIDE / max(img.shape[:2])
+    if scale >= 1:
+        return img
+    return cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
 
 # ---------- image helpers ----------
@@ -116,7 +131,7 @@ def read_barcode(gray: np.ndarray) -> tuple[list[str], str | None]:
 # ---------- experiment ----------
 
 def main() -> None:
-    truth = pd.read_csv("truth.csv")
+    truth = load_truth()
     matrix_rows, result_rows = [], []
 
     for filename, true_serial in zip(truth.filename, truth.true_serial):
@@ -129,7 +144,7 @@ def main() -> None:
         row = {"filename": filename}
         for name, make in VARIANTS:
             img = make(gray)
-            cv2.imwrite(os.path.join(var_dir, f"{name}.jpg"), img)
+            cv2.imwrite(os.path.join(var_dir, f"{name}.jpg"), preview(img))
             row[name] = any(found(true_serial, v) for v in decode(img))
         matrix_rows.append(row)
 

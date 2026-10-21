@@ -55,6 +55,55 @@ def found(true_serial: str, text: str) -> bool:
     return normalize(true_serial) in normalize(text)
 
 
+def valid_ean13(s: str) -> bool:
+    """True if s is 13 digits whose last digit is the correct EAN-13 check digit.
+
+    EAN-13 is the product barcode number on retail packaging. UPC-A codes (12
+    digits, US) come out of ZBar as EAN-13 with a leading 0, so they count too.
+
+    The check digit is computed from the first 12: weight them 1,3,1,3,...,
+    add up, and take whatever brings the total to the next multiple of 10.
+    E.g. 400638133393 -> 4*1+0*3+0*1+6*3+3*1+8*3+1*1+3*3+3*1+3*3+9*1+3*3 = 89,
+    next multiple of 10 is 90, so the check digit is 1: 4006381333931.
+    Any SINGLE wrong digit always breaks the check. Some combinations of errors
+    don't (e.g. two neighbouring digits swapped when they differ by 5) - one
+    reading on Monster_Horizontal had three wrong digits and still passed.
+    """
+    if not re.fullmatch(r"\d{13}", s):
+        return False
+    total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(s[:12]))
+    return (10 - total % 10) % 10 == int(s[12])
+
+
+def load_truth(path: str = "truth.csv", photos_dir: str = PHOTOS_DIR) -> pd.DataFrame:
+    """Load truth.csv with every serial as TEXT, and refuse obviously broken rows.
+
+    Rows whose photo isn't in photos_dir are dropped WITH a printed warning, so
+    a missing photo neither crashes a run nor silently changes the totals.
+
+    dtype=str matters for product barcodes, which are all digits: by default
+    pandas would turn '0123456789012' into the number 123456789012 (leading zero
+    lost) and it would never equal the text a barcode reader returns.
+
+    The check catches a CSV that went through Excel: Excel shows long numbers as
+    e.g. 9.34E+12 and, when saving, writes that ROUNDED form - the real digits
+    are gone from the file and only the person with the label can restore them.
+    """
+    truth = pd.read_csv(path, dtype={"true_serial": str}, keep_default_na=False)
+    broken = truth[truth.true_serial.str.contains(r"^\d(?:\.\d+)?E\+\d+$", case=False)]
+    if len(broken):
+        rows = ", ".join(f"{f}={s}" for f, s in zip(broken.filename, broken.true_serial))
+        raise ValueError(
+            f"{len(broken)} serial(s) in {path} look like Excel scientific notation, so "
+            f"their digits are lost: {rows}. Re-type them from the labels in a text "
+            f"editor (or format the Excel column as Text first).")
+    exists = truth.filename.map(lambda f: os.path.exists(os.path.join(photos_dir, f)))
+    if not exists.all():
+        print(f"WARNING: skipping {(~exists).sum()} row(s) of {path} with no photo in "
+              f"{photos_dir}/: {', '.join(truth.filename[~exists])}")
+    return truth[exists].reset_index(drop=True)
+
+
 def read_barcodes(gray: np.ndarray) -> list[Barcode]:
     """Run ZBar on the whole image. Returns a list of (type, value, rect)."""
     results = []
@@ -79,7 +128,7 @@ def main() -> None:
     os.makedirs(os.path.join(OUT_DIR, "ocr_text"), exist_ok=True)
     os.makedirs(os.path.join(OUT_DIR, "boxes"), exist_ok=True)
 
-    truth = pd.read_csv("truth.csv")
+    truth = load_truth()
     rows = []
 
     for filename, true_serial in zip(truth.filename, truth.true_serial):

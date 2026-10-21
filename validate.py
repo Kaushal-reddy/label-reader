@@ -7,8 +7,9 @@ For each photo:
                (e.g. the ASUS QR codes hold a URL ending in the serial)
   2. OCR       Stage 5 reader -> pull serial candidates out of the text,
                preferring ones written right after "SN" / "S/N"
-  3. pattern   a serial must look like one: 10-20 letters/digits, with at least
-               one letter and at least two digits
+  3. pattern   an ID must look like one of:
+               - a serial: 10-20 letters/digits, at least one letter and two digits
+               - a product barcode number (EAN-13): 13 digits with a valid check digit
   4. decide    ACCEPT only when barcode and OCR independently agree, allowing for
                characters OCR is known to confuse (O/0, A/4, ...). Then output
                the BARCODE's characters: barcodes carry a checksum, OCR doesn't.
@@ -31,7 +32,7 @@ from collections import Counter
 import cv2
 import pandas as pd
 
-from baseline import normalize
+from baseline import load_truth, normalize, valid_ean13
 from barcode_reader import read_barcode
 from ocr_reader import read_ocr
 
@@ -42,6 +43,10 @@ PHOTOS_DIR = "photos"
 # serials, so it would also accept other manufacturers' formats. It rules out
 # words ("CHINA"), short codes ("12M"), dates and pure numbers.
 SERIAL_RE = re.compile(r"^(?=.*[A-Z])(?=(?:.*\d){2})[A-Z0-9]{10,20}$")
+
+# Product barcode numbers (EAN-13) are all digits, so SERIAL_RE rejects them;
+# they're accepted through valid_ean13 instead (in baseline.py, shared with
+# the OCR stage), which requires a correct check digit.
 
 # Text written right after an "SN" / "S/N" / "S/N:" key on the label.
 # [^A-Z0-9]* allows the ':' and spaces in between.
@@ -59,6 +64,11 @@ def looks_like_serial(s: str) -> bool:
     return bool(SERIAL_RE.match(s))
 
 
+def looks_like_id(s: str) -> bool:
+    """An equipment serial OR a product barcode number."""
+    return looks_like_serial(s) or valid_ean13(s)
+
+
 def same_modulo_confusions(a: str, b: str) -> bool:
     """True if a and b are the same string once confusable characters are merged."""
     return a.translate(CONFUSABLE) == b.translate(CONFUSABLE)
@@ -74,7 +84,7 @@ def barcode_candidates(values: list[str]) -> list[str]:
     out = []
     for v in values:
         for piece in re.split(r"[^A-Za-z0-9]+", v.upper()):
-            if looks_like_serial(piece):
+            if looks_like_id(piece):
                 out.append(piece)
     return out
 
@@ -94,6 +104,13 @@ def ocr_candidates(text: str) -> tuple[list[str], list[str]]:
         for token in re.findall(r"[A-Z0-9]+", line):
             if looks_like_serial(token):
                 unlabelled[token] += 1
+        # Product barcode numbers are printed in digit groups under the bars
+        # ("9 341234 567890"), so OCR returns them as separate words. Join digit
+        # groups on the same line, then look for exactly 13 digits in a row.
+        joined = re.sub(r"(?<=\d)[\s\-]+(?=\d)", "", line)
+        for number in re.findall(r"(?<!\d)\d{13}(?!\d)", joined):
+            if valid_ean13(number):
+                unlabelled[number] += 1
     return [s for s, _ in labelled.most_common()], [s for s, _ in unlabelled.most_common()]
 
 
@@ -121,7 +138,7 @@ def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str]) -> tuple[str
 
 
 def main() -> None:
-    truth = pd.read_csv("truth.csv")
+    truth = load_truth()
     rows = []
     for filename in truth.filename:
         img = cv2.imread(os.path.join(PHOTOS_DIR, filename))
