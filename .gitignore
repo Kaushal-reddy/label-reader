@@ -8,9 +8,11 @@ __pycache__/
 # The empty photos/ folder is kept so the scripts find it.
 photos/*
 !photos/.gitkeep
+# Full-size originals that shrink_photos.py moved out of photos/
+photos_original/
 truth.csv
 .DS_Store
 
-.serana/
+.serena/
 
 *.log
