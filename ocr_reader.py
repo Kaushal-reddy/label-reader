@@ -26,6 +26,7 @@ Like Stage 3, this compares methods on every photo:
 import atexit
 import glob
 import os
+import sys
 import re
 import time
 
@@ -36,7 +37,7 @@ import pytesseract
 from pytesseract import Output
 
 import baseline  # noqa: F401  (sets pytesseract's path to the tesseract program)
-from baseline import found, load_truth, normalize, valid_ean13
+from baseline import found, load_truth, normalize, out_dir_for, valid_ean13
 from label_finder import crop_rotated, find_label_boxes
 from pyzbar import pyzbar
 from pyzbar.pyzbar import ZBarSymbol
@@ -424,31 +425,31 @@ def read_ocr(img: np.ndarray) -> str:
     return "\n".join(texts)
 
 
-def main() -> None:
+def main(folder: str | None = None) -> None:
+    photos_dir, out_dir, truth = folder or PHOTOS_DIR, out_dir_for(folder, "ocr"), load_truth(folder)
     for sub in ("text", "lines"):
-        os.makedirs(os.path.join(OUT_DIR, sub), exist_ok=True)
-    for old in glob.glob(os.path.join(OUT_DIR, "lines", "*.png")):
+        os.makedirs(os.path.join(out_dir, sub), exist_ok=True)
+    for old in glob.glob(os.path.join(out_dir, "lines", "*.png")):
         os.remove(old)
 
-    truth = load_truth()
     rows = []
     for filename, true_serial in zip(truth.filename, truth.true_serial):
         stem = os.path.splitext(filename)[0]
-        crops = get_crops(cv2.imread(os.path.join(PHOTOS_DIR, filename)))
+        crops = get_crops(cv2.imread(os.path.join(photos_dir, filename)))
         row = {"filename": filename, "n_crops": len(crops)}
         all_text = []
         for name, method in METHODS:
             t0 = time.perf_counter()
             texts = []
             for i, crop in enumerate(crops):
-                prefix = os.path.join(OUT_DIR, "lines", f"{stem}_{i}")
+                prefix = os.path.join(out_dir, "lines", f"{stem}_{i}")
                 texts.append(f"[crop {i}]\n{method(crop, prefix)}")
             joined = "\n".join(texts)
             all_text.append(joined)
             row[f"{name}_ok"] = found(true_serial, joined)
             row[f"{name}_wrong"] = chars_wrong(true_serial, joined)
             row[f"{name}_s"] = round(time.perf_counter() - t0, 2)
-            with open(os.path.join(OUT_DIR, "text", f"{stem}__{name}.txt"), "w", encoding="utf-8") as f:
+            with open(os.path.join(out_dir, "text", f"{stem}__{name}.txt"), "w", encoding="utf-8") as f:
                 f.write(joined)
         # What read_ocr() returns: both methods' text together.
         combined = "\n".join(all_text)
@@ -458,11 +459,13 @@ def main() -> None:
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(OUT_DIR, "variant_matrix.csv"), index=False)
+    df.to_csv(os.path.join(out_dir, "variant_matrix.csv"), index=False)
     print(df.to_string(index=False))
     n = len(df)
-    base = pd.read_csv(os.path.join("output", "baseline", "results.csv"))
-    print(f"\nSerial found exactly (stage 2, full photo): {base.ocr_ok.sum()}/{n}")
+    baseline_csv = os.path.join(out_dir_for(folder, "baseline"), "results.csv")
+    if os.path.exists(baseline_csv):
+        base = pd.read_csv(baseline_csv)
+        print(f"\nSerial found exactly (stage 2, full photo): {base.ocr_ok.sum()}/{len(base)}")
     for name in [m for m, _ in METHODS] + ["combined"]:
         print(f"Serial found exactly ({name:10}):           {df[f'{name}_ok'].sum()}/{n}"
               f"   within 1 char: {(df[f'{name}_wrong'] <= 1).sum()}/{n}"
@@ -470,4 +473,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)
