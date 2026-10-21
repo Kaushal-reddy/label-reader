@@ -25,6 +25,7 @@ analyze.py turns per_photo.csv into figures and confusion matrices.
 """
 
 import os
+import sys
 import statistics
 import time
 from collections.abc import Callable
@@ -36,7 +37,7 @@ import pandas as pd
 import pytesseract
 
 import baseline
-from baseline import found, load_truth
+from baseline import found, load_truth, out_dir_for
 from barcode_reader import read_barcode
 from label_finder import crop_rotated, find_label_boxes
 from ocr_reader import closest_match, get_crops, read_barcode_digits, read_lines, read_whole_crop
@@ -65,7 +66,9 @@ def evaluate_photo(img: np.ndarray, true_serial: str) -> dict[str, Any]:
     r["s2_ocr_ok"] = found(true_serial, raw_text)
 
     # Stage 3: barcode with retries, full photo
-    values, _ = read_barcode(gray)
+    values, _, conflicts, agreeing = read_barcode(gray)
+    r["s3_conflicts"] = " ".join(conflicts)
+    r["s3_agreeing"] = " ".join(f"{v}:{n}" for v, n in agreeing.items())
     r["s3_barcode_ok"] = any(found(true_serial, v) for v in values)
 
     # Stage 4: label crops
@@ -90,7 +93,7 @@ def evaluate_photo(img: np.ndarray, true_serial: str) -> dict[str, Any]:
     # Stage 6: the decision, from exactly what validate.py would see
     bc = barcode_candidates(values)
     ocr_lab, ocr_unlab = ocr_candidates(both)
-    status, serial, source, reason = decide(bc, ocr_lab, ocr_unlab)
+    status, serial, source, reason = decide(bc, ocr_lab, ocr_unlab, conflicts, agreeing)
     r.update({"s6_status": status, "s6_serial": serial, "s6_source": source, "s6_reason": reason,
               "s6_correct": serial == true_serial,
               "s6_barcode_candidates": " ".join(bc),
@@ -117,12 +120,12 @@ def pct(k: int, n: int) -> str:
     return f"{k}/{n} ({100 * k / n:.0f}%)"
 
 
-def main() -> None:
-    os.makedirs(OUT_DIR, exist_ok=True)
-    truth = load_truth()
+def main(folder: str | None = None) -> None:
+    photos_dir, out_dir, truth = folder or PHOTOS_DIR, out_dir_for(folder, "evaluation"), load_truth(folder)
+    os.makedirs(out_dir, exist_ok=True)
     rows = []
     for filename, true_serial in zip(truth.filename, truth.true_serial):
-        img = cv2.imread(os.path.join(PHOTOS_DIR, filename))
+        img = cv2.imread(os.path.join(photos_dir, filename))
         row = {"filename": filename, "true_serial": true_serial}
         row.update(evaluate_photo(img, true_serial))
         runs = [time_pipeline(img) for _ in range(RUNS)]
@@ -133,7 +136,7 @@ def main() -> None:
         print(f"{filename:24} {row['s6_status']:13} {row['t_total']:.1f}s")
 
     df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(OUT_DIR, "per_photo.csv"), index=False)
+    df.to_csv(os.path.join(out_dir, "per_photo.csv"), index=False)
     n = len(df)
     acc = df[df.s6_status == "accepted"]
     rev = df[df.s6_status != "accepted"]
@@ -162,10 +165,11 @@ def main() -> None:
     time_table = [(k.replace("t_", ""), f"{df[k].mean():.2f}", f"{df[k].max():.2f}")
                   for k in ("t_label_find", "t_barcode", "t_ocr", "t_decide", "t_total")]
 
-    md = [f"Measured on {n} photos of 5 items (truth.csv). Times: median of {RUNS} runs per photo.\n",
+    md = [f"Measured on {n} photos ({os.path.join(folder, 'truth.csv') if folder else 'truth.csv'}). Times: median of {RUNS} runs per photo.\n",
           "### Accuracy per stage\n", "| Stage | Measure | Result |", "|---|---|---|"]
     md += [f"| {s} | {m} | {r} |" for s, m, r in stage_table]
-    md += ["\n### Final decisions (Stage 6, strict: accept only if barcode and OCR agree)\n",
+    md += ["\n### Final decisions (Stage 6: accept only if barcode and OCR agree, "
+           "or a product barcode is read one way only, by 2+ image variants)\n",
            "| Measure | Result |", "|---|---|"]
     md += [f"| {m} | {r} |" for m, r in final_table]
     md += ["\n### Time per photo (seconds)\n", "| Step | Mean | Max |", "|---|---|---|"]
@@ -174,10 +178,10 @@ def main() -> None:
     md += [f"| {r.filename} | {r.s6_status} | {r.s6_serial} | {'yes' if r.s6_correct else 'no'} | {r.s6_reason} |"
            for r in df.itertuples()]
     summary = "\n".join(md)
-    with open(os.path.join(OUT_DIR, "summary.md"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "summary.md"), "w", encoding="utf-8") as f:
         f.write(summary + "\n")
     print("\n" + summary)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

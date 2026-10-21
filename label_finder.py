@@ -1,6 +1,8 @@
 """Stage 4: find and crop the label(s) in each photo with classical OpenCV.
 
 Run with:  python label_finder.py   (from the repo folder, with the venv active)
+Or on another dataset folder (its own photos + truth.csv):
+           python label_finder.py photos/ean_dataset
 
 Why not just threshold for a bright rectangle? Because our labels come in both
 polarities: white label on a black mouse (ASUS), and dark label with white text
@@ -36,10 +38,14 @@ Outputs in output/labels/:
   boxes/<photo>.jpg          the photo with the kept boxes drawn and numbered
   crops/<photo>_<n>.png      the crops themselves (PNG = no extra JPEG blur)
   results.csv                per photo: number of crops, barcode on crops, timings
+With a dataset folder they go to output/<folder name>/labels/ instead, without
+debug/ (six images per photo would be thousands of files), and truth.csv rows
+whose `checked` column isn't "yes" are skipped.
 """
 
 import glob
 import os
+import sys
 import time
 
 import cv2
@@ -47,7 +53,7 @@ import numpy as np
 import pandas as pd
 
 from barcode_reader import read_barcode
-from baseline import found, load_truth
+from baseline import found, load_truth, out_dir_for
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "labels")
@@ -135,39 +141,46 @@ def crop_rotated(img: np.ndarray, rect: RotatedRect, pad: float = 0.08) -> np.nd
     return crop
 
 
-def main() -> None:
-    for sub in ("debug", "boxes", "crops"):
-        os.makedirs(os.path.join(OUT_DIR, sub), exist_ok=True)
-    for old in glob.glob(os.path.join(OUT_DIR, "crops", "*.png")):
+def main(folder: str | None = None) -> None:
+    photos_dir, out_dir, truth = folder or PHOTOS_DIR, out_dir_for(folder, "labels"), load_truth(folder)
+    save_debug = not folder
+    stage3 = os.path.join(out_dir_for(folder, "barcode"), "results.csv")
+    for sub in ("debug", "boxes", "crops") if save_debug else ("boxes", "crops"):
+        os.makedirs(os.path.join(out_dir, sub), exist_ok=True)
+    for old in glob.glob(os.path.join(out_dir, "crops", "*.png")):
         os.remove(old)   # a photo may produce fewer crops than last run; don't leave stale ones
 
-    truth = load_truth()
     rows = []
     for filename, true_serial in zip(truth.filename, truth.true_serial):
         stem = os.path.splitext(filename)[0]
-        img = cv2.imread(os.path.join(PHOTOS_DIR, filename))
+        img = cv2.imread(os.path.join(photos_dir, filename))
+        if img is None:
+            raise FileNotFoundError(f"can't read {os.path.join(photos_dir, filename)}")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         t0 = time.perf_counter()
-        boxes = find_label_boxes(gray, debug_prefix=os.path.join(OUT_DIR, "debug", stem))
+        debug_prefix = os.path.join(out_dir, "debug", stem) if save_debug else None
+        boxes = find_label_boxes(gray, debug_prefix=debug_prefix)
         crops = [crop_rotated(img, r) for r in boxes]
         find_s = time.perf_counter() - t0
 
+        # Box outlines and numbers sized to the photo (the settings were picked
+        # on 4032 px photos; at that thickness they'd cover a 1152 px one).
+        line = max(2, round(12 * img.shape[1] / 4032))
         vis = img.copy()
         for i, (rect, crop) in enumerate(zip(boxes, crops)):
             pts = cv2.boxPoints(rect).astype(np.int32)     # 4 corners of the rotated box
-            cv2.polylines(vis, [pts], True, (0, 255, 0), 12)
-            cv2.putText(vis, str(i), tuple(pts[1]), cv2.FONT_HERSHEY_SIMPLEX, 4, (0, 0, 255), 10)
-            cv2.imwrite(os.path.join(OUT_DIR, "crops", f"{stem}_{i}.png"), crop)
-        cv2.imwrite(os.path.join(OUT_DIR, "boxes", f"{stem}.jpg"), vis)
+            cv2.polylines(vis, [pts], True, (0, 255, 0), line)
+            cv2.putText(vis, str(i), tuple(pts[1]), cv2.FONT_HERSHEY_SIMPLEX, line / 3, (0, 0, 255), line)
+            cv2.imwrite(os.path.join(out_dir, "crops", f"{stem}_{i}.png"), crop)
+        cv2.imwrite(os.path.join(out_dir, "boxes", f"{stem}.jpg"), vis)
 
         # Side check: does the Stage 3 barcode reader still work on the crops,
         # and is it faster than on the whole photo?
         t0 = time.perf_counter()
         values = []
         for crop in crops:
-            v, _ = read_barcode(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
-            values += v
+            values += read_barcode(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)).values
         barcode_s = time.perf_counter() - t0
 
         rows.append({
@@ -179,12 +192,11 @@ def main() -> None:
         })
 
     df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(OUT_DIR, "results.csv"), index=False)
+    df.to_csv(os.path.join(out_dir, "results.csv"), index=False)
     print(df.to_string(index=False))
     n = len(df)
     print(f"\nPhotos with >=1 crop:        {(df.n_crops > 0).sum()}/{n}")
     print(f"Barcode correct on crops:    {df.barcode_on_crops_ok.sum()}/{n}")
-    stage3 = os.path.join("output", "barcode", "results.csv")
     if os.path.exists(stage3):
         s3 = pd.read_csv(stage3)
         print(f"Barcode correct, full photo: {s3.barcode_ok.sum()}/{len(s3)}  (Stage 3)")
@@ -194,4 +206,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

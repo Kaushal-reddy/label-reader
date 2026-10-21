@@ -2,6 +2,8 @@
 confusion matrices and figures.
 
 Run with:  python analyze.py   (after evaluate.py; from the repo folder, with the venv active)
+Or for another dataset folder, after `python evaluate.py photos/ean_dataset`:
+           python analyze.py photos/ean_dataset   (reads and writes output/ean_dataset/...)
 
 evaluate.py does the slow part (every stage on every photo, timed 3 times).
 This script only reads its output/evaluation/per_photo.csv, so it runs in a
@@ -40,6 +42,10 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 EVAL_CSV = os.path.join("output", "evaluation", "per_photo.csv")
 VARIANTS_CSV = os.path.join("output", "barcode", "variant_matrix.csv")
 OUT_DIR = os.path.join("output", "analysis")
+TOP_CONFUSIONS = 15   # rows of the character confusion table to print / show
+# Figures with one row per photo get unreadable (and ~150 inches tall) on a
+# big dataset; above this many photos only their CSV table is written.
+MAX_FIGURE_ROWS = 60
 
 # ---------- look ----------
 
@@ -129,20 +135,39 @@ def align(true: str, read: str) -> list[tuple[str, str]]:
 
 # ---------- loading ----------
 
+def split_name(photo: str) -> tuple[str, str]:
+    """Split a photo name into (item, condition).
+
+    Names are <item>[_<condition>], and the item ends at the first part with a
+    digit in it, if any:
+      Laptop_2_Glare -> ("Laptop_2", "glare")      Bottle1_Vertical -> ("Bottle1", "vertical")
+      Monster_Horizontal -> ("Monster", "horizontal")   Mouse_1 -> ("Mouse_1", "straight-on")
+    No condition means the plain, straight-on photo of that item.
+    """
+    parts = photo.split("_")
+    end = next((i + 1 for i, p in enumerate(parts) if any(c.isdigit() for c in p)), 1)
+    condition = " ".join(parts[end:]).lower() or "straight-on"
+    return "_".join(parts[:end]), {"sideangle": "side angle"}.get(condition, condition)
+
+
 def load() -> pd.DataFrame:
     if not os.path.exists(EVAL_CSV):
         sys.exit(f"{EVAL_CSV} not found. Run evaluate.py first; this script analyses its results.")
     # keep_default_na=False: an empty cell (e.g. no serial found) stays "", not NaN.
-    df = pd.read_csv(EVAL_CSV, keep_default_na=False)
+    # Serials and OCR reads as text: an all-digit barcode number would otherwise become an int.
+    text_cols = ["true_serial", "s5_combined_closest", "s6_serial", "s6_barcode_candidates",
+                 "s6_ocr_labelled", "s6_ocr_unlabelled"]
+    df = pd.read_csv(EVAL_CSV, keep_default_na=False, dtype={c: str for c in text_cols})
     if "s5_combined_closest" not in df.columns:
         sys.exit(f"{EVAL_CSV} is from an older evaluate.py. Re-run evaluate.py, then this script.")
 
-    # Photo names follow <device>_<number>[_<condition>], e.g. Laptop_2_Glare.jpeg.
     df["photo"] = df.filename.str.replace(r"\.[^.]+$", "", regex=True)
-    parts = df.photo.str.split("_")
-    df["device"] = parts.str[0]
-    df["condition"] = (parts.str[2:].str.join(" ").str.lower()
-                       .replace({"": "straight-on", "sideangle": "side angle"}))
+    df["item"], df["condition"] = zip(*(split_name(p) for p in df.photo))
+    df["device"] = df["item"].str.replace(r"[_\d]+$", "", regex=True)    # Laptop_2 -> Laptop
+    # An all-digit truth is a retail product barcode number (EAN/UPC); anything
+    # else is an equipment serial. The two behave very differently, so most
+    # tables are split by this.
+    df["kind"] = np.where(df.true_serial.str.fullmatch(r"\d+"), "product barcode", "serial label")
 
     # Derived pass/fail columns, so every measure below is just a True/False column.
     df["s4_crop_found"] = df.s4_n_crops > 0
@@ -192,6 +217,14 @@ class Report:
         self.md.append("|" + "---|" * len(t.columns))
         self.md += ["| " + " | ".join(map(str, row)) + " |" for row in t.itertuples(index=False)]
         self.md.append("")
+
+    def too_many_rows(self, n: int, name: str) -> bool:
+        """True (and says so in the report) if a one-row-per-photo figure would be too big."""
+        if n <= MAX_FIGURE_ROWS:
+            return False
+        self.text(f"Figure skipped: {n} rows is too many to draw (limit {MAX_FIGURE_ROWS}); "
+                  f"see {name}.csv.")
+        return True
 
     def text(self, line: str) -> None:
         print(line)
@@ -243,36 +276,51 @@ def legend_above(ax: plt.Axes, ncol: int) -> None:
 
 # ---------- the analyses ----------
 
+def groups(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    """[("all photos", df)], plus one entry per kind of label if there are several."""
+    kinds = [(k, df[df.kind == k]) for k in sorted(df.kind.unique())]
+    return [("all photos", df)] + (kinds if len(kinds) > 1 else [])
+
+
 def stage_accuracy(df: pd.DataFrame, rep: Report) -> None:
-    n = len(df)
-    rep.section("Accuracy per stage", "Share of photos where the serial was read correctly at each stage.")
+    rep.section("Accuracy per stage", "Share of photos where the serial was read correctly at each "
+                "stage, overall and per kind of label.")
     rows = []
-    for col, label, stage in MEASURES:
-        k = int(df[col].sum())
-        lo, hi = wilson(k, n)
-        rows.append({"stage": stage, "measure": label, "correct": k, "of": n,
-                     "rate_%": round(100 * k / n), "ci95_low_%": round(100 * lo), "ci95_high_%": round(100 * hi)})
+    for group, sub in groups(df):
+        n = len(sub)
+        for col, label, stage in MEASURES:
+            k = int(sub[col].sum())
+            lo, hi = wilson(k, n)
+            rows.append({"group": group, "stage": stage, "measure": label, "correct": k, "of": n,
+                         "rate_%": round(100 * k / n), "ci95_low_%": round(100 * lo),
+                         "ci95_high_%": round(100 * hi)})
     t = pd.DataFrame(rows)
     rep.table(t, "stage_accuracy")
 
-    fig, ax = plt.subplots(figsize=(7.5, 4.6))
-    y = np.arange(len(t))[::-1]
-    rates = t["rate_%"] / 100
-    err = [rates - t["ci95_low_%"] / 100, t["ci95_high_%"] / 100 - rates]
-    ax.barh(y, rates, height=0.55, color=SERIES[0])
-    ax.errorbar(rates, y, xerr=err, fmt="none", ecolor=INK_2, elinewidth=1, capsize=3)
-    for yi, hi, k in zip(y, t["ci95_high_%"] / 100, t.correct):
-        ax.text(hi + 0.02, yi, f"{k}/{n}", va="center", fontsize=8, color=INK_2)
-    ax.set_yticks(y, [f"{r.stage}  {r.measure}" for r in t.itertuples()])
+    names = [g for g, _ in groups(df)]
+    bar = 0.8 / len(names)
+    fig, ax = plt.subplots(figsize=(7.5, 1.6 + 0.42 * len(MEASURES) * (1 + 0.5 * (len(names) - 1))))
+    centre = np.arange(len(MEASURES))[::-1] * (1 + 0.5 * (len(names) - 1))
+    for g, (color, name) in enumerate(zip(SERIES, names)):
+        sub = t[t.group == name]
+        y = centre + (len(names) - 1) / 2 * bar - g * bar          # first group on top
+        rates = sub["rate_%"].to_numpy() / 100
+        err = [rates - sub["ci95_low_%"] / 100, sub["ci95_high_%"] / 100 - rates]
+        ax.barh(y, rates, height=bar * 0.85, color=color, label=f"{name} (n={sub.of.iloc[0]})")
+        ax.errorbar(rates, y, xerr=err, fmt="none", ecolor=INK_2, elinewidth=0.8, capsize=2)
+        for yi, hi, k, n in zip(y, sub["ci95_high_%"] / 100, sub.correct, sub.of):
+            ax.text(hi + 0.015, yi, f"{k}/{n}", va="center", fontsize=7, color=INK_2)
+    ax.set_yticks(centre, [f"{s}  {label}" for _, label, s in MEASURES])
     ax.set_xlim(0, 1.12)
     ax.set_xticks(np.linspace(0, 1, 6), [f"{p:.0%}" for p in np.linspace(0, 1, 6)])
     ax.xaxis.grid(True)
     ax.set_axisbelow(True)
     ax.tick_params(axis="y", length=0)
-    ax.set_title(f"Accuracy per stage  (n = {n} photos)")
-    ax.text(0, -0.13, "Whiskers: 95% Wilson interval. Labels show photos correct; "
-            "whiskers end where they do, not at the label.", transform=ax.transAxes,
-            fontsize=7.5, color=MUTED)
+    if len(names) > 1:
+        legend_above(ax, len(names))
+    ax.set_title("Accuracy per stage", pad=22 if len(names) > 1 else 6)
+    ax.text(0, -0.6 / ax.figure.get_figheight(), "Whiskers: 95% Wilson interval. "
+            "Labels show photos correct.", transform=ax.transAxes, fontsize=7.5, color=MUTED)
     rep.figure(fig, "stage_accuracy")
 
 
@@ -283,7 +331,13 @@ def photo_outcomes(df: pd.DataFrame, rep: Report) -> None:
     names = [f"{s} {label}" for _, label, s in MEASURES]
     t = df[["photo"] + cols].copy()
     t.columns = ["photo"] + names
-    rep.table(t.replace({True: "yes", False: "no"}), "photo_outcomes", show=False)
+    # Column by column, not t.replace({True: ...}): with some mixes of column
+    # types (e.g. the EAN set) pandas 3's replace() crashes inside pandas.
+    for c in names:
+        t[c] = np.where(t[c].astype(bool), "yes", "no")
+    rep.table(t, "photo_outcomes", show=False)
+    if rep.too_many_rows(len(df), "photo_outcomes"):
+        return
     # Too wide for a terminal with full names, so print it like barcode_reader.py does.
     print(f"{'':20}" + " ".join(f"{i:>2}" for i in range(len(cols))))
     for r in df.itertuples():
@@ -352,9 +406,11 @@ def source_agreement(df: pd.DataFrame, rep: Report) -> None:
     rep.figure(fig, "source_agreement")
 
 
-def char_confusion(df: pd.DataFrame, rep: Report) -> None:
-    """Which characters does OCR misread, and as what?"""
-    rep.section("OCR character confusions",
+def char_confusion(df: pd.DataFrame, rep: Report, kind: str) -> None:
+    """Which characters does OCR misread, and as what? (one kind of label)"""
+    df = df[df.kind == kind]
+    slug = kind.replace(" ", "_")
+    rep.section(f"OCR character confusions: {kind}s",
                 "Each true serial lined up against the closest stretch of OCR text (Stage 5, combined). "
                 "∅ = missing (OCR skipped a character) or extra (OCR added one). "
                 "Photos where OCR read no text at all are left out.")
@@ -373,7 +429,11 @@ def char_confusion(df: pd.DataFrame, rep: Report) -> None:
         return
     t = pd.DataFrame([{"true": tc or "∅", "read as": rc or "∅", "times": c, "photos": ", ".join(where[(tc, rc)])}
                       for (tc, rc), c in sorted(errors.items(), key=lambda kv: -kv[1])])
-    rep.table(t, "char_confusions")
+    rep.table(t.head(TOP_CONFUSIONS), f"char_confusions_{slug}", show=False)
+    print(t.head(TOP_CONFUSIONS).to_string(index=False))
+    if len(t) > TOP_CONFUSIONS:
+        rep.text(f"(top {TOP_CONFUSIONS} of {len(t)}; all in char_confusions_{slug}_all.csv)")
+        t.to_csv(os.path.join(OUT_DIR, f"char_confusions_{slug}_all.csv"), index=False)
 
     # Matrix over just the characters involved in an error. Rows = true chars
     # that were misread, columns = what OCR read; the diagonal counts correct
@@ -391,11 +451,11 @@ def char_confusion(df: pd.DataFrame, rep: Report) -> None:
     ax.set_xlabel("read by OCR as")
     ax.xaxis.set_label_position("top")
     ax.set_ylabel("true character")
-    ax.set_title("OCR character confusion matrix", pad=34)
+    ax.set_title(f"OCR character confusions: {kind}s", pad=34)
     ax.text(0, -0.08, "Cell = number of times; colour = share of that row "
             "(how often the true character was read that way).",
             transform=ax.transAxes, fontsize=7.5, color=MUTED, va="top")
-    rep.figure(fig, "char_confusion")
+    rep.figure(fig, f"char_confusion_{slug}")
 
 
 def ocr_methods(df: pd.DataFrame, rep: Report) -> None:
@@ -407,12 +467,13 @@ def ocr_methods(df: pd.DataFrame, rep: Report) -> None:
     t.columns = ["photo"] + [m for _, m in methods]
     rep.table(t, "ocr_chars_wrong")
 
-    vals = t[[m for _, m in methods]].to_numpy()
-    fig, ax = plt.subplots(figsize=(4.6, 0.36 * len(df) + 1.4))
-    heatmap(ax, vals, list(t.photo), [m for _, m in methods], [[str(v) for v in row] for row in vals],
-            vmin=0, vmax=max(vals.max(), 1), dark_text_above=0.5)
-    ax.set_title("OCR characters wrong (0 = exact)", pad=24)
-    rep.figure(fig, "ocr_chars_wrong")
+    if not rep.too_many_rows(len(df), "ocr_chars_wrong"):
+        vals = t[[m for _, m in methods]].to_numpy()
+        fig, ax = plt.subplots(figsize=(4.6, 0.36 * len(df) + 1.4))
+        heatmap(ax, vals, list(t.photo), [m for _, m in methods], [[str(v) for v in row] for row in vals],
+                vmin=0, vmax=max(vals.max(), 1), dark_text_above=0.5)
+        ax.set_title("OCR characters wrong (0 = exact)", pad=24)
+        rep.figure(fig, "ocr_chars_wrong")
 
     # How many photos would count as read if we tolerated k wrong characters?
     ks = list(range(6))
@@ -448,16 +509,16 @@ def acceptance_policies(df: pd.DataFrame, rep: Report) -> None:
 
     def evidence(r) -> int:
         if r.s6_status == "accepted":
-            return 0                                   # barcode and OCR agree
+            return 0                                   # what validate.py accepts
         if r.s6_source == "barcode":
-            return 1                                   # barcode alone (it has a checksum)
+            return 1                                   # a barcode alone, even with conflicts
         if r.s6_source == "ocr" and r.s6_serial in r.s6_ocr_labelled.split():
             return 2                                   # OCR, written after an SN key
         if r.s6_source == "ocr":
             return 3                                   # any serial-shaped OCR text
         return 4                                       # nothing found
     level = np.array([evidence(r) for r in df.itertuples()])
-    names = ["barcode and OCR agree (current)", "+ barcode alone", "+ OCR after an SN key",
+    names = ["current rule (validate.py)", "+ any barcode alone", "+ OCR after an SN key",
              "+ any serial-shaped OCR"]
     rows = []
     for k, name in enumerate(names):
@@ -491,12 +552,16 @@ def acceptance_policies(df: pd.DataFrame, rep: Report) -> None:
 
 def by_condition(df: pd.DataFrame, rep: Report) -> None:
     rep.section("By capture condition and device",
-                "Conditions come from the file names (<device>_<n>_<condition>). Groups are tiny: "
-                "read these as hints, not rates.")
+                "Conditions come from the file names (<item>_<condition>; no condition = "
+                "straight-on). Groups are tiny: read these as hints, not rates.")
     measures = [("s3_barcode_ok", "barcode"), ("s5_combined_ok", "OCR exact"), ("s6_accepted", "accepted")]
     for col_name, fname in (("condition", "by_condition"), ("device", "by_device")):
         g = df.groupby(col_name)
         t = pd.DataFrame({"photos": g.size()} | {m: g[c].sum().astype(int) for c, m in measures})
+        if len(t) > 1 and (t.photos == 1).mean() > 0.5:
+            rep.text(f"By {col_name}: skipped, most photos are a group of their own "
+                     "(the file names aren't <item>_<condition>).")
+            continue
         rep.table(t, fname, index=True)
         if col_name != "condition":
             continue
@@ -532,6 +597,8 @@ def timing(df: pd.DataFrame, rep: Report) -> None:
     t.index = [k.replace("t_", "") for k in keys]
     rep.table(t, "timing_summary", index=True)
 
+    if rep.too_many_rows(len(df), "timing_summary"):
+        return
     d = df.sort_values("t_total")
     fig, ax = plt.subplots(figsize=(7, 0.36 * len(d) + 1.6))
     y = np.arange(len(d))
@@ -578,6 +645,8 @@ def barcode_variants(rep: Report) -> None:
                            "only_this_variant": [int((m[v] & (m[variants].sum(axis=1) == 1)).sum())
                                                  for v in variants]})
     rep.table(totals, "barcode_variants")
+    if rep.too_many_rows(len(m), "barcode_variants"):
+        return
     rows = list(m.filename.str.replace(r"\.[^.]+$", "", regex=True))
     cols = [f"{v}\n{int(m[v].sum())}/{len(m)}" for v in variants]
     fig, ax = plt.subplots(figsize=(8, 0.36 * len(m) + 1.8))
@@ -587,7 +656,14 @@ def barcode_variants(rep: Report) -> None:
     rep.figure(fig, "barcode_variants")
 
 
-def main() -> None:
+def main(folder: str | None = None) -> None:
+    # The functions above read these paths, so point them at the dataset first.
+    global EVAL_CSV, VARIANTS_CSV, OUT_DIR
+    if folder:
+        out = os.path.join("output", os.path.basename(os.path.normpath(folder)))
+        EVAL_CSV = os.path.join(out, "evaluation", "per_photo.csv")
+        VARIANTS_CSV = os.path.join(out, "barcode", "variant_matrix.csv")
+        OUT_DIR = os.path.join(out, "analysis")
     df = load()
     os.makedirs(OUT_DIR, exist_ok=True)
     rep = Report(len(df))
@@ -597,7 +673,8 @@ def main() -> None:
     acceptance_policies(df, rep)
     source_agreement(df, rep)
     ocr_methods(df, rep)
-    char_confusion(df, rep)
+    for kind in sorted(df.kind.unique()):
+        char_confusion(df, rep, kind)
     barcode_variants(rep)
     by_condition(df, rep)
     timing(df, rep)
@@ -607,4 +684,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)
