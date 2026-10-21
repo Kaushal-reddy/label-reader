@@ -16,3 +16,6 @@ truth.csv
 .serena/
 
 *.log
+# Trained detector weights: trained on a downloaded dataset whose licence is
+# unknown, and re-created by barcode_detector.py.
+models/
