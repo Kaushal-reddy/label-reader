@@ -1,7 +1,7 @@
 # Label Reader
 
 Reads serial numbers from phone photos of IT equipment labels (laptops, mice),
-using classical computer vision only: **OpenCV**, **ZBar** (barcodes, via pyzbar)
+and product barcode numbers (EAN-13) from retail packaging, using classical computer vision only: **OpenCV**, **ZBar** (barcodes, via pyzbar)
 and **Tesseract** (OCR, via pytesseract). No deep-learning models.
 
 The design goal is **never to save a wrong serial**. A serial is accepted only
@@ -10,7 +10,8 @@ when the barcode and the printed text agree. Everything else is flagged
 
 ## Results
 
-Measured on 12 photos of 5 items, against hand-typed true serials in `truth.csv`.
+Measured on 24 photos against hand-typed true values in `truth.csv`: 12 photos of
+5 IT devices (serial numbers) and 12 photos of 6 retail products (EAN-13 numbers).
 Run `evaluate.py` to reproduce; the full tables are written to `output/evaluation/summary.md`,
 and `analyze.py` turns them into figures and confusion matrices (`output/analysis/report.md`).
 
@@ -18,28 +19,36 @@ and `analyze.py` turns them into figures and confusion matrices (`output/analysi
 
 | Measure | Result |
 |---|---|
-| Accepted without a human | 6/12 (50%) |
+| Accepted without a human | 15/24 (62%): devices 6/12, products 9/12 |
 | Accepted and **wrong** | **0** |
-| Precision (correct / accepted) | 6/6 (100%) |
-| Sent to review | 6/12, of which 4 already have the correct best guess |
-| Time per photo | 2.4 s mean, 5.3 s max on a Windows 11 laptop; 1.5 s mean, 2.6 s max on a MacBook Air (median of 3 runs) |
+| Precision (correct / accepted) | 15/15 (100%) |
+| Sent to review | 9/24, of which 6 already have the correct best guess |
+| Time per photo | 1.8 s mean, 6.5 s max on a Windows 11 laptop (median of 3 runs) |
 
 **What each stage added**
 
 | Stage | Measure | Result |
 |---|---|---|
-| 2 – baseline | Barcode on the raw photo | 7/12 |
-| 2 – baseline | OCR on the raw photo (serial anywhere in the text) | 2/12 |
-| 3 – barcode | Barcode with retries + barcode-type filter | 8/12 |
-| 4 – label crop | Photos where a label crop was found | 10/12 |
-| 5 – OCR | OCR on the crops, exact | 6/12 |
-| 5 – OCR | OCR on the crops, within 1 character | 9/12 |
+| 2 – baseline | Barcode on the raw photo | 18/24 |
+| 2 – baseline | OCR on the raw photo (serial anywhere in the text) | 3/24 |
+| 3 – barcode | Barcode with retries + barcode-type filter | 19/24 |
+| 4 – label crop | Photos where a label crop was found | 22/24 |
+| 5 – OCR | OCR on the crops: whole crop, exact | 3/24 |
+| 5 – OCR | OCR on the crops: line by line, exact | 7/24 |
+| 5 – OCR | OCR on the crops: digits next to a product barcode, exact | 8/24 |
+| 5 – OCR | OCR on the crops: all methods combined, exact | 15/24 |
+| 5 – OCR | OCR on the crops: combined, within 1 character | 18/24 |
 
-Cropping the label and reading it line by line **tripled** exact OCR reads
-(2 → 6). The near misses are almost all look-alike characters (letter `O` vs
+On the 12 device photos, cropping the label and reading it line by line
+**tripled** exact OCR reads (2 → 6). The near misses are almost all look-alike characters (letter `O` vs
 digit `0`, `A` vs `4`), which is what the barcode cross-check in Stage 6 catches.
 For example, on `Laptop_3` OCR read `TCNOCV…` (letter O); the barcode confirmed it
 and supplied the correct `TCN0CV…` (digit 0). (Serials are shortened in this README; see [Data](#data).)
+
+On the product photos, the first version of the pipeline accepted only 2 of 12:
+the digits under a product barcode touch its bars, so OCR never saw them as text.
+Reading them in strips guided by the barcode (see Stage 5) raised that to 9 of 12,
+still with no wrong acceptances.
 
 ## How it works
 
@@ -76,9 +85,10 @@ threshold picked 32–66 here, because most of each photo is texture. Label text
 measured 0.44–0.64 edge density and textures about 0.3, so the cut-off is 0.40.
 
 ### Stage 5 – OCR (`ocr_reader.py`)
-Two methods run on every crop and both outputs are kept:
+Three methods run on every crop and all outputs are kept:
 - **Whole crop**: the crop as one text block (`--psm 6`).
 - **Line by line**: OpenCV finds each text line, and Tesseract reads each one alone (`--psm 7`).
+- **Barcode digits**: for product barcodes only, the digits printed next to the bars (below).
 
 Line by line exists because **a barcode inside a crop breaks Tesseract's layout
 analysis**. A clean `S/N: PM2130H…` crop read as `aa` whole, but exactly
@@ -86,7 +96,25 @@ right once the line was cut out on its own. Per line:
 - blobs taller than 2.5× the character height are skipped (barcodes, QR codes, logos), and so are lines too short to hold a 10-character serial;
 - polarity is fixed per line (one crop can contain both dark-on-light and light-on-dark text);
 - each line is resized so the text is ~30 px tall, the size Tesseract is tuned for;
+- pieces on the same row with a small gap (≤ 1.5 character heights) are joined first, so a number printed in groups (`4 006381 333931`) becomes one line instead of short pieces that get thrown away;
 - whether the crop is upside down is decided **once per crop**, from the summed Tesseract confidence of its 3 widest lines read both ways.
+
+**Barcode digits.** The digits under a product barcode touch its long guard
+bars, so the line finder joined digits and bars into one tall blob and skipped it
+as "a barcode". Whole-crop OCR was confused by the bars as well. So for every
+EAN-13 barcode ZBar finds in a crop, the barcode is used as a guide instead:
+1. Find exactly where the bars start and end: walk outward from the middle of the
+   barcode, row by row, while each row still has the same bar pattern as a row a
+   few pixels further in.
+2. Cut a thin strip just past **both** ends, because a crop can be upside down.
+3. Erase the thin guard bars that reach into the strip.
+4. OCR the strip with Tesseract limited to the digits 0–9, the right way up and upside down.
+5. Keep only a 13-digit number with a valid EAN-13 check digit.
+
+The barcode only says *where* to look; Tesseract reads the digits from the pixels
+without seeing ZBar's value, so OCR and barcode are still two independent
+readings when Stage 6 compares them. This method read 8 of the 12 product photos
+exactly, with no wrong numbers.
 
 **Calling Tesseract directly (`tess_direct.py`).** pytesseract starts a new
 `tesseract.exe` for every call: it saves the image to a temp file, loads the
@@ -102,9 +130,9 @@ and identical results on every photo; average OCR time per photo fell from
 pytesseract automatically (`check_setup.py` reports which path is in use).
 
 ### Stage 6 – Validation (`validate.py`)
-1. **Barcode candidates**: serial-shaped pieces of the decoded values (the ASUS QR codes hold a URL ending in the serial).
-2. **OCR candidates**: text right after `SN` / `S/N:` first, then any serial-shaped word.
-3. **Pattern**: 10–20 letters/digits, at least one letter and two digits. Deliberately generic, not built from the test serials.
+1. **Barcode candidates**: serial-shaped pieces of the decoded values (the ASUS QR codes hold a URL ending in the serial), or a valid EAN-13 number.
+2. **OCR candidates**: text right after `SN` / `S/N:` first, then any serial-shaped word, then any valid EAN-13 number (digit groups separated by spaces or dashes are joined first).
+3. **Pattern**: a serial is 10–20 letters/digits, at least one letter and two digits. Deliberately generic, not built from the test serials. A product number must be exactly 13 digits whose last digit is the correct EAN-13 check digit; that catches any single wrong digit (but not every combination of several).
 4. **Decision**: accept only when a barcode candidate and an OCR candidate agree, allowing for OCR look-alikes (O/0, I/1, A/4, …). The **barcode's** characters are saved, because barcodes carry a checksum and OCR doesn't.
 
 Running OCR twice does not count as two sources: both methods use the same engine
@@ -154,6 +182,8 @@ All commands below assume the venv is active and you're in the repo folder.
 The photos and true serials are **not in this repository**, because they contain
 the real serial numbers of my own devices. The test set was:
 
+**IT devices** (serial numbers):
+
 | Item | Photos | Label | Barcode |
 |---|---|---|---|
 | Laptop 1 (ASUS) | 2: straight-on (label cut off at the frame edge), rotated + dim | Dark, white text | QR (URL ending in the serial), visible in one photo |
@@ -162,9 +192,18 @@ the real serial numbers of my own devices. The test set was:
 | Mouse 1 (ASUS) | 3: straight-on, side angle, variant | White, black text | Code128 |
 | Mouse 2 (Razer) | 3: straight-on, side angle, variant | Dark blue + silver strip, light text | Code128 |
 
-All photos were taken on a phone and used at the camera's original resolution
-(4032×2268), except `Mouse_1_variant` (3309×1861) and `Mouse_2_Sideangle`
-(hand-cropped to 2268×2448, see Limitations).
+**Retail products** (EAN-13 barcode numbers): 6 items, each photographed
+horizontal and vertical: an energy-drink can (`Monster`), a notebook, a box
+(`Box1`), a supplement container, and two bottles. 12 photos.
+
+All photos were taken on a phone and used at the camera's original resolution:
+4032×2268 for the devices, except `Mouse_1_variant` (3309×1861) and
+`Mouse_2_Sideangle` (hand-cropped to 2268×2448, see Limitations), and 8064×4536
+for the products.
+
+`truth.csv` must be saved as plain text. Opened and saved in Excel, long numbers
+become e.g. `9.34E+12` and the real digits are lost; `load_truth()` refuses such
+values. Rows whose photo is missing are skipped with a warning.
 
 To run the project on your own photos, put them in `photos/` and create
 `truth.csv` (see `truth.example.csv` for the format: `filename,true_serial`, one
@@ -194,7 +233,7 @@ adds the variant figure), prints every table, and writes a PNG + CSV for each to
 
 | Figure | Shows |
 |---|---|
-| `stage_accuracy` | Accuracy per stage with 95% Wilson intervals (with 12 photos, they're wide) |
+| `stage_accuracy` | Accuracy per stage with 95% Wilson intervals (with 24 photos, they're wide) |
 | `photo_outcomes` | Photo × stage pass/fail grid: where each photo is lost |
 | `decision_confusion` | Accepted / needs review × correct / wrong, plus precision, recall, F1 |
 | `acceptance_policies` | What looser rules would accept, and how many wrong serials they'd let through |
@@ -207,15 +246,17 @@ adds the variant figure), prints every table, and writes a PNG + CSV for each to
 
 ## Limitations
 
-- **Small test set**: 12 photos of 5 items (3 laptops, 2 mice). Percentages move by 8 points per photo.
-- **Tuned on the test set**: thresholds (edge strength 90, density 0.40, line sizes) were chosen by looking at these same 12 photos, and the look-alike list includes `A/4` because it showed up here. There is no held-out set, so real-world accuracy is probably lower.
+- **Small test set**: 24 photos of 11 items (3 laptops, 2 mice, 6 products). Percentages move by 4 points per photo.
+- **Tuned on the test set**: thresholds (edge strength 90, density 0.40, line sizes, the digit-strip size) were chosen by looking at these same photos, and the look-alike list includes `A/4` because it showed up here. There is no held-out set, so real-world accuracy is probably lower.
 - **One hand-edited photo**: `Mouse_2_Sideangle.jpeg` was cropped by hand to remove books from the background. Its label is still not found.
 - **Known failures**:
   - `Laptop_1_variant`, `Mouse_2_Sideangle`: label not found (dim, small, or low-contrast print on a dark label).
   - `Laptop_2_Vertical`: OCR too far off (4 characters) to confirm the barcode.
+  - `Monster_Horizontal` (curved can) and `Bottle1_Horizontal` (glare): the barcode reads, but the digits don't come out as a valid EAN-13, so there's nothing to confirm it.
+  - `Supplement_Horizontal`: the barcode isn't read, so the digit reader has nothing to go on.
   - Steep side angles defeat the barcode reader: the crop corrects rotation but not perspective.
 - **Image quality matters most**: the first set of photos had been downscaled to 900×1600 in transfer. Replacing them with the camera originals (4032×2268) did more for barcode reading than any code change.
-- **Speed**: about 2.4 s per photo. The biggest part is now the barcode step (1.3 s), which decodes the full 9-megapixel photo and, when that fails, a 3× upscale of it. OCR of a large junk crop (e.g. mousepad texture) can still take several seconds.
+- **Speed**: about 1.8 s per photo. The biggest part is the barcode step (1.2 s mean, 6.3 s max), which decodes the full photo (up to 36 megapixels) and, when that fails, a 3× upscale of it. OCR of a large junk crop (e.g. mousepad texture) can still take several seconds.
 
 ## What I would do next
 
@@ -229,10 +270,10 @@ adds the variant figure), prints every table, and writes a PNG + CSV for each to
 ```
 check_setup.py     Stage 0  checks OpenCV, pyzbar, Tesseract (both paths), pandas, matplotlib
 native_libs.py     setup    finds Tesseract and ZBar on Windows / macOS / Linux
-baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize()/found()
+baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize(), found(), valid_ean13(), load_truth()
 barcode_reader.py  Stage 3  read_barcode(): retries + barcode-type filter
 label_finder.py    Stage 4  find_label_boxes(), crop_rotated()
-ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line OCR
+ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line + barcode-digit OCR
 tess_direct.py     Stage 5  TessEngine: Tesseract's C API via ctypes (no process per call)
 validate.py        Stage 6  the pipeline: candidates, pattern check, agreement, CSVs
 evaluate.py        Stage 7  accuracy per stage + timing → output/evaluation/
