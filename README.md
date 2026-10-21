@@ -253,6 +253,10 @@ With `photos/` and `truth.csv` in place:
 | `python barcode_reader.py` | Stage 3: barcode variant matrix | `output/barcode/variant_matrix.csv` |
 | `python label_finder.py` | Stage 4: label boxes, crops and debug images | `output/labels/boxes/`, `crops/`, `debug/` |
 | `python ocr_reader.py` | Stage 5: OCR method comparison | `output/ocr/variant_matrix.csv`, `text/`, `lines/` |
+| `python mock_erp.py seed --job JOB-0001 --from truth.csv` | Creates (or resets) a job in the mock ERP with one manifest line per item; `--leave-out Mouse_2` drops an item | `output/erp/erp.sqlite` |
+| `python mock_erp.py serve` | Runs the mock ERP on `localhost:8000` (API docs at `/docs`); failure flags below | – |
+| `python post_to_erp.py --job JOB-0001` | Stage 9: posts accepted, matched photos to the ERP and queues the rest for review | `output/erp/posted.csv`, `review_queue.csv` |
+| `python -m pytest tests` | Tests for the mock ERP, the client and Stage 9 (fake serials only) | – |
 
 Every stage saves its intermediate images to `output/` so failures can be inspected by eye.
 
@@ -294,6 +298,67 @@ adds the variant figure), prints every table, and writes a PNG + CSV for each to
 | `by_condition` | Success by capture condition (glare, side angle, …) parsed from file names |
 | `timing` | Time per photo, split into label finding, barcode and OCR |
 
+## ERP integration (mock)
+
+Stage 9 sends the pipeline's decisions to an asset-recording system: an accepted
+serial that matches a line on the job's manifest is received automatically,
+and everything else goes to a review queue. The real target system's API isn't
+public, so `mock_erp.py` is a **generic stand-in written for this project**. It
+is not any vendor's API; it only has the parts an integration has to cope with.
+Needs the extra packages: `pip install -r requirements-erp.txt`.
+
+```
+validation.csv ─► post_to_erp.py ─┬─► outbox ─► erp_client.py ─► mock_erp.py (HTTP)
+                                  └─► review_queue.csv
+```
+
+- **Mock ERP** (`mock_erp.py`, FastAPI + SQLite): jobs, manifest lines (identifier,
+  `serial` or `ean`, quantity, received) and receipts. Access needs a bearer token
+  from `POST /oauth/token` (client id + secret, read from `ERP_CLIENT_ID` /
+  `ERP_CLIENT_SECRET`). `POST /api/v1/receipts` needs an `Idempotency-Key`: the
+  same key and body again returns the saved receipt (200), the same key with a
+  different body is refused (422), and receiving more than the line's quantity is
+  refused (409). The schema is in `docs/erp_openapi.json` (`python mock_erp.py openapi`).
+- **Failure injection**, to test error recovery: `--fail-rate` (random 503),
+  `--lost-rate` (receipt saved, but the reply is a 500), `--slow-rate` /
+  `--slow-seconds`, `--rate-limit` (429 with `Retry-After`), `--token-ttl`, `--seed`.
+- **Client** (`erp_client.py`): renews the token before it expires and once on a
+  401, retries network errors, timeouts, 5xx and 429 with exponential backoff and
+  jitter (or the server's `Retry-After`), and raises `ErpRejected` for other 4xx
+  without retrying. Retrying a POST is safe because of the idempotency key.
+- **Matching** (`post_to_erp.py`): identifiers are compared as uppercase letters
+  and digits. A photo is posted only if the pipeline **accepted** it, **exactly one**
+  line has **exactly** that identifier, and the line still has quantity left.
+  Otherwise it goes to `review_queue.csv` with a category: `not_confident`
+  (with a hint when the best guess matches a line), `near_match` (OCR look-alikes
+  or one character different: never posted), `not_on_manifest`, `several_lines`,
+  `already_received` (e.g. the second photo of the same item) or `erp_rejected`.
+- **Outbox** (`output/erp/outbox.sqlite`): each post is saved as pending with its
+  idempotency key **before** it is sent. If the ERP is down, posts stay pending
+  with the last error, and the next run sends them again with the same keys.
+
+**Demo run** on the 26 photos (Mouse_2 left off the manifest), with the ERP failing
+30% of requests with a 503 and losing the reply on 30% of new receipts:
+
+```bash
+python mock_erp.py seed --job JOB-0001 --from truth.csv --leave-out Mouse_2
+python mock_erp.py serve --fail-rate 0.3 --lost-rate 0.3 --rate-limit 5 --seed 7
+python post_to_erp.py --job JOB-0001        # in a second terminal
+```
+
+10 photos were posted and 16 went to review (8 not confident, 6 already received,
+2 not on the manifest); 10 of the 11 manifest lines were received (Laptop_1's
+photos were both "needs review"). The server answered 15 requests with 503,
+2 with a lost-response 500 and 4 with 429, and the database still held exactly one
+receipt per photo posted. Running it again posted nothing new. This is one run with
+one seed; the tests (`python -m pytest tests`, 41 tests) repeat the same checks with
+fake serials, including every line received exactly once under 50% 503s plus 50%
+lost responses, and pending posts sent after an outage.
+
+`python mock_erp.py serve --host 0.0.0.0` makes the mock reachable from other
+computers on your network. Its database holds real serials when seeded from
+`truth.csv`, so only do that on a network you trust.
+
 ## Limitations
 
 - **Small test set**: 12 serial-label photos of 5 devices (3 laptops, 2 mice) and 14 product photos of 7 products. Within a group, one photo moves a rate by 7–8 points.
@@ -332,6 +397,11 @@ evaluate.py        Stage 7  accuracy per stage + timing → output/evaluation/
 analyze.py         Stage 8  figures, confusion matrices, tables → output/analysis/
 shrink_photos.py   utility  shrinks photos over 4032 px; originals → photos_original/
 prepare_ean_dataset.py utility  downloaded barcode set → photos/ean_dataset/ + review sheets
+mock_erp.py        Stage 9  mock ERP server (generic stand-in): seed / serve / openapi
+erp_client.py      Stage 9  ErpClient: tokens, retries with backoff, idempotent receipts
+post_to_erp.py     Stage 9  match results to the manifest, outbox, post + review queue
+tests/             pytest tests for Stage 9 (fake serials only)
+docs/erp_openapi.json      the mock ERP's API schema
 photos/            input photos (not committed; see Data)
 truth.csv          true serials (not committed); format in truth.example.csv
 output/            everything generated (git-ignored, re-created by the scripts)

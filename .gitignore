@@ -16,3 +16,5 @@ truth.csv
 .serena/
 
 *.log
+
+tests/.pytest_cache/
