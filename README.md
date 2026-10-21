@@ -294,6 +294,57 @@ adds the variant figure), prints every table, and writes a PNG + CSV for each to
 | `by_condition` | Success by capture condition (glare, side angle, …) parsed from file names |
 | `timing` | Time per photo, split into label finding, barcode and OCR |
 
+## Barcode detector (Stage 3b, in progress)
+
+On the 403-image EAN set, ZBar reads nothing on 178 images, and the hand-tuned
+label finder (Stage 4) finds a crop in only 59, because its thresholds were tuned
+on serial labels in 4032 px photos. `barcode_detector.py` adds a learned detector
+for barcodes and QR codes: Faster R-CNN with a ResNet-50 FPN v2 backbone
+(torchvision, pretrained on COCO), fine-tuned on the boxes in the downloaded
+dataset. It only proposes **where** to look: its crops go through the same
+Stage 3 reader and Stage 6 rules as the full photo, so it can add reads but can't
+make the pipeline trust a number it otherwise wouldn't. torchvision is
+BSD-licensed; Ultralytics YOLO (AGPL-3.0) was ruled out so the code can be used in
+a company's internal tools.
+
+Training uses box-aware augmentation (90° rotations, flips, zoom-in crops,
+lighting, blur, JPEG artefacts) and multi-scale input (640–1024 px). It
+runs a warmup then cosine learning rate, and uses bf16 on CUDA. It keeps the
+epoch with the best barcode AP@0.5 on a validation split and can be resumed.
+
+**Measuring it honestly** (`evaluate_detector.py`). The EAN photos come from the
+same dataset the detector learns from, so it uses grouped 5-fold
+cross-validation: all photos of one product (same `true_serial`) stay in one fold,
+and each fold's detector is trained without that fold and scored only on it. Other
+photos from the same three collections are left out of training, since they may
+show the test products. Each test photo is then read four ways through Stage 6:
+`full` (today's reader), `crops`, `fallback` (crops only if the full photo read
+nothing) and `merged`. The report counts accepted and **accepted-wrong** for each.
+
+Training runs on a GPU machine; evaluation needs ZBar, so it runs here:
+
+```bash
+# GPU machine (e.g. DGX Spark), from a copy of this repo with
+# photos/Barcode_Dataset/ and photos/ean_dataset/truth.csv copied over:
+pip install numpy==2.5.4 pandas==3.0.6 opencv-python-headless==5.0.0.93 \
+            -r requirements-detector.txt      # torch must be a CUDA build there
+python evaluate_detector.py train             # 5 fold models -> models/folds/
+python barcode_detector.py                    # final model on all data -> models/barcode_detector.pt
+
+# This machine, after copying models/ back:
+pip install -r requirements-detector.txt
+python evaluate_detector.py evaluate          # -> output/detector/summary.md
+```
+
+Both training commands take `--epochs`, `--batch-size`, `--workers` and `--resume`.
+`evaluate_detector.py train --only 2 3` trains just those folds. `evaluate`
+refuses to run if `truth.csv` changed since the folds were trained, since that
+could put a test photo's product into training. Model weights stay out of git
+(`models/` is ignored), because the dataset's licence is unknown.
+
+Status: code written and smoke-tested on a few images. Not trained yet, so there
+are no results.
+
 ## Limitations
 
 - **Small test set**: 12 serial-label photos of 5 devices (3 laptops, 2 mice) and 14 product photos of 7 products. Within a group, one photo moves a rate by 7–8 points.
@@ -330,9 +381,12 @@ tess_direct.py     Stage 5  TessEngine: Tesseract's C API via ctypes (no process
 validate.py        Stage 6  the pipeline: candidates, pattern check, agreement, CSVs
 evaluate.py        Stage 7  accuracy per stage + timing → output/evaluation/
 analyze.py         Stage 8  figures, confusion matrices, tables → output/analysis/
+barcode_detector.py Stage 3b learned barcode/QR detector: training, BarcodeDetector.detect()/crops()
+evaluate_detector.py Stage 3b grouped cross-validation: train folds (GPU), evaluate through Stage 6
 shrink_photos.py   utility  shrinks photos over 4032 px; originals → photos_original/
 prepare_ean_dataset.py utility  downloaded barcode set → photos/ean_dataset/ + review sheets
 photos/            input photos (not committed; see Data)
 truth.csv          true serials (not committed); format in truth.example.csv
 output/            everything generated (git-ignored, re-created by the scripts)
+models/            trained detector weights (git-ignored)
 ```

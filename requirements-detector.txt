@@ -1,0 +1,12 @@
+# Extra packages for the learned barcode detector (barcode_detector.py,
+# evaluate_detector.py). The rest of the pipeline doesn't need them.
+#
+# On this machine:   pip install -r requirements.txt -r requirements-detector.txt
+#
+# On a GPU training machine (e.g. DGX Spark), only training runs, so ZBar and
+# Tesseract aren't needed: install these two plus numpy, pandas and OpenCV
+# (see README, "Barcode detector"). torch must be a CUDA build there: NVIDIA's
+# PyTorch container already has one, otherwise use the install command for
+# your CUDA version from pytorch.org.
+torch==2.14.1
+torchvision==0.29.1
