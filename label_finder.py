@@ -47,7 +47,7 @@ import numpy as np
 import pandas as pd
 
 from barcode_reader import read_barcode
-from baseline import found
+from baseline import found, load_truth
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "labels")
@@ -141,7 +141,7 @@ def main() -> None:
     for old in glob.glob(os.path.join(OUT_DIR, "crops", "*.png")):
         os.remove(old)   # a photo may produce fewer crops than last run; don't leave stale ones
 
-    truth = pd.read_csv("truth.csv")
+    truth = load_truth()
     rows = []
     for filename, true_serial in zip(truth.filename, truth.true_serial):
         stem = os.path.splitext(filename)[0]

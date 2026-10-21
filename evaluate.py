@@ -36,10 +36,10 @@ import pandas as pd
 import pytesseract
 
 import baseline
-from baseline import found
+from baseline import found, load_truth
 from barcode_reader import read_barcode
 from label_finder import crop_rotated, find_label_boxes
-from ocr_reader import closest_match, get_crops, read_lines, read_whole_crop
+from ocr_reader import closest_match, get_crops, read_barcode_digits, read_lines, read_whole_crop
 from validate import barcode_candidates, decide, ocr_candidates
 
 PHOTOS_DIR = "photos"
@@ -76,12 +76,13 @@ def evaluate_photo(img: np.ndarray, true_serial: str) -> dict[str, Any]:
         crop_values += read_barcode(cv2.cvtColor(c, cv2.COLOR_BGR2GRAY))[0]
     r["s4_barcode_on_crops_ok"] = any(found(true_serial, v) for v in crop_values)
 
-    # Stage 5: OCR on the crops (each method, and both together = read_ocr)
+    # Stage 5: OCR on the crops (each method, and all together = read_ocr)
     crops = get_crops(img)
     whole = "\n".join(read_whole_crop(c) for c in crops)
     lines = "\n".join(read_lines(c) for c in crops)
-    both = whole + "\n" + lines
-    for name, text in (("whole", whole), ("lines", lines), ("combined", both)):
+    digits = "\n".join(d for c in crops for d in read_barcode_digits(c))
+    both = whole + "\n" + lines + "\n" + digits
+    for name, text in (("whole", whole), ("lines", lines), ("digits", digits), ("combined", both)):
         r[f"s5_{name}_ok"] = found(true_serial, text)
         r[f"s5_{name}_wrong"], closest = closest_match(true_serial, text)
     r["s5_combined_closest"] = closest   # what OCR read where the serial should be (analyze.py)
@@ -104,7 +105,8 @@ def time_pipeline(img: np.ndarray) -> dict[str, float]:
     values_t = timed(read_barcode, gray)
     crops_t = timed(get_crops, img)
     crops = crops_t[0]
-    _, t_ocr = timed(lambda: "\n".join(read_whole_crop(c) + "\n" + read_lines(c) for c in crops))
+    _, t_ocr = timed(lambda: "\n".join(read_whole_crop(c) + "\n" + read_lines(c) + "\n"
+                                       + "\n".join(read_barcode_digits(c)) for c in crops))
     _, t_decide = timed(lambda: decide(barcode_candidates(values_t[0][0]), [], []))
     # get_crops repeats the label finding, so OCR time = crop cutting + reading.
     return {"t_label_find": t_labels, "t_barcode": values_t[1],
@@ -117,7 +119,7 @@ def pct(k: int, n: int) -> str:
 
 def main() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
-    truth = pd.read_csv("truth.csv")
+    truth = load_truth()
     rows = []
     for filename, true_serial in zip(truth.filename, truth.true_serial):
         img = cv2.imread(os.path.join(PHOTOS_DIR, filename))
@@ -144,6 +146,7 @@ def main() -> None:
         ("4", "Barcode on the crops", pct(df.s4_barcode_on_crops_ok.sum(), n)),
         ("5", "OCR on crops, whole crop: exact", pct(df.s5_whole_ok.sum(), n)),
         ("5", "OCR on crops, line by line: exact", pct(df.s5_lines_ok.sum(), n)),
+        ("5", "OCR on crops, barcode digits: exact", pct(df.s5_digits_ok.sum(), n)),
         ("5", "OCR on crops, combined: exact", pct(df.s5_combined_ok.sum(), n)),
         ("5", "OCR on crops, combined: within 1 character", pct((df.s5_combined_wrong <= 1).sum(), n)),
     ]
