@@ -18,3 +18,5 @@ truth.csv
 *.log
 # Asset register (app.py): database and scanned photos hold real serials
 data/
+
+tests/.pytest_cache/
