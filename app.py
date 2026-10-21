@@ -1,158 +1,36 @@
-"""A small asset register ("mini-ERP") on top of the label reader.
+"""A small asset register ("mini-ERP") on top of the label reader: the screens.
 
 Run with:  streamlit run app.py   (from the repo folder, with the venv active)
-It opens in the browser at http://localhost:8501.
+It opens in the browser at http://localhost:8501. For the ERP parts, also run
+the mock ERP in a second terminal:  python mock_erp.py serve
+(after seeding a job once:  python mock_erp.py seed --job JOB-0001 --from truth.csv)
 
 Streamlit re-runs this whole file from top to bottom every time someone clicks
 or uploads something, and draws whatever the code says to draw. So there are no
 callbacks: the page is just "read the inputs, show the outputs", top to bottom.
 
 Screens (picked in the sidebar):
-  Scan     upload a photo -> barcode + OCR + validation (Stages 3-6) -> save it
+  Scan     upload a photo -> barcode + OCR + validation (Stages 3-6) -> save, and post to the ERP
   Review   items the reader wasn't sure about: a person corrects / confirms them
   Assets   the register: search, filter, assign items to people, export to CSV
+  ERP      the selected job: what's received, what's waiting to send, what needs a decision
 
-Storage: one SQLite database file, data/assets.db (git-ignored: it holds real
-serials). Scanned photos are copied to data/scans/ so a reviewer can look at
-them later.
+Storage and the ERP link are in register.py (no Streamlit there).
 """
 
 import os
-import sqlite3
 import time
-from datetime import datetime
 
 import cv2
 import numpy as np
-import pandas as pd
 import streamlit as st
 
-from baseline import valid_ean13
-from barcode_reader import read_barcode
+import register as reg
+from erp_client import ErpError
 from ocr_reader import read_ocr
+from barcode_reader import read_barcode
 from validate import barcode_candidates, decide, looks_like_serial, ocr_candidates
-
-# ASSET_DATA_DIR lets a test run use a throwaway folder instead of the real register.
-DATA_DIR = os.environ.get("ASSET_DATA_DIR", "data")
-DB_PATH = os.path.join(DATA_DIR, "assets.db")
-SCANS_DIR = os.path.join(DATA_DIR, "scans")
-
-
-# ---------- database ----------
-
-def db() -> sqlite3.Connection:
-    """Open the database, creating the folder and table the first time.
-
-    One row per scanned photo. status starts as what the pipeline decided
-    ("accepted" or "needs_review"); the review screen will later set it to
-    "confirmed" once a person has checked it.
-    """
-    os.makedirs(SCANS_DIR, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row          # rows can be read by column name
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS items (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            scanned_at  TEXT NOT NULL,
-            photo_path  TEXT NOT NULL,
-            serial      TEXT NOT NULL,     -- the pipeline's value (or best guess)
-            item_type   TEXT NOT NULL,     -- "device" (serial label) or "product" (EAN-13)
-            status      TEXT NOT NULL,     -- accepted / needs_review / confirmed
-            source      TEXT,              -- barcode+ocr, barcode, ocr
-            reason      TEXT,              -- why the pipeline decided what it did
-            assigned_to TEXT DEFAULT '',   -- e.g. the employee who has the laptop
-            notes       TEXT DEFAULT ''
-        )""")
-    return con
-
-
-def save_item(photo_bytes: bytes, original_name: str, result: dict) -> int:
-    """Store the photo in data/scans/ and add a row for it. Returns the new row id."""
-    os.makedirs(SCANS_DIR, exist_ok=True)   # the very first save comes before any db() call
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    photo_path = os.path.join(SCANS_DIR, f"{stamp}_{os.path.basename(original_name)}")
-    with open(photo_path, "wb") as f:
-        f.write(photo_bytes)
-    with db() as con:   # "with" commits the change at the end (or rolls back on an error)
-        cur = con.execute(
-            "INSERT INTO items (scanned_at, photo_path, serial, item_type, status, source, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",   # ? placeholders: sqlite3 fills them in safely
-            (datetime.now().isoformat(timespec="seconds"), photo_path, result["serial"],
-             "product" if valid_ean13(result["serial"]) else "device",
-             result["status"], result["source"], result["reason"]))
-        return cur.lastrowid
-
-
-def already_saved(serial: str) -> list[sqlite3.Row]:
-    """Earlier rows with the same serial: a second scan of the same item."""
-    with db() as con:
-        return con.execute("SELECT id, scanned_at, status FROM items WHERE serial = ?",
-                           (serial,)).fetchall()
-
-
-def review_items() -> list[sqlite3.Row]:
-    """Everything still waiting for a person, oldest first."""
-    with db() as con:
-        return con.execute("SELECT * FROM items WHERE status = 'needs_review' ORDER BY id").fetchall()
-
-
-def confirm_item(item_id: int, serial: str, notes: str) -> None:
-    """A person checked the photo: store their value and mark the row confirmed.
-
-    item_type is worked out again, because the person may have changed the value.
-    """
-    with db() as con:
-        con.execute("UPDATE items SET serial = ?, item_type = ?, status = 'confirmed', notes = ? "
-                    "WHERE id = ?",
-                    (serial, "product" if valid_ean13(serial) else "device", notes, item_id))
-
-
-def delete_item(item_id: int) -> None:
-    """Remove a bad scan (wrong photo, unreadable): its row and its copied photo."""
-    with db() as con:
-        row = con.execute("SELECT photo_path FROM items WHERE id = ?", (item_id,)).fetchone()
-        con.execute("DELETE FROM items WHERE id = ?", (item_id,))
-    if row and os.path.exists(row["photo_path"]):
-        os.remove(row["photo_path"])
-
-
-ASSET_COLUMNS = ["id", "serial", "item_type", "status", "assigned_to", "notes", "scanned_at", "source"]
-
-
-def all_items() -> pd.DataFrame:
-    """The whole register as a table, newest first."""
-    with db() as con:
-        df = pd.read_sql_query(f"SELECT {', '.join(ASSET_COLUMNS)} FROM items ORDER BY id DESC", con)
-    # Empty SQL values (NULL) arrive as None; make them "" so search and the
-    # "what changed?" comparison treat them like any other text.
-    return df.fillna({"assigned_to": "", "notes": "", "source": ""})
-
-
-def update_details(changes: list[tuple[str, str, int]]) -> None:
-    """Save edited (assigned_to, notes, id) rows, all in one transaction."""
-    with db() as con:
-        con.executemany("UPDATE items SET assigned_to = ?, notes = ? WHERE id = ?", changes)
-
-
-def format_problem(value: str) -> str | None:
-    """Why a typed value doesn't look like an ID, or None if it does.
-
-    Uses the same rules as the pipeline (validate.looks_like_serial,
-    baseline.valid_ean13), so a person can't confirm something the reader
-    itself would never accept as an ID. It's a warning, not a block: a real
-    serial from another manufacturer might not fit the generic pattern.
-    """
-    if not value:
-        return "The value is empty."
-    if value.isdigit():
-        if len(value) == 13 and not valid_ean13(value):
-            return "13 digits, but the EAN-13 check digit is wrong - probably a typo."
-        if len(value) != 13:
-            return f"{len(value)} digits: a product barcode number has 13."
-        return None
-    if not looks_like_serial(value):
-        return "Doesn't look like a serial (10-20 letters/digits, at least 1 letter and 2 digits)."
-    return None
+from baseline import valid_ean13
 
 
 # ---------- the label reader ----------
@@ -176,9 +54,73 @@ def scan_photo(img: np.ndarray) -> dict:
             "t_barcode": t_barcode, "t_ocr": t_ocr}
 
 
+def format_problem(value: str) -> str | None:
+    """Why a typed value doesn't look like an ID, or None if it does.
+
+    Uses the same rules as the pipeline (validate.looks_like_serial,
+    baseline.valid_ean13), so a person can't confirm something the reader
+    itself would never accept as an ID. It's a warning, not a block: a real
+    serial from another manufacturer might not fit the generic pattern.
+    """
+    if not value:
+        return "The value is empty."
+    if value.isdigit():
+        if len(value) == 13 and not valid_ean13(value):
+            return "13 digits, but the EAN-13 check digit is wrong - probably a typo."
+        if len(value) != 13:
+            return f"{len(value)} digits: a product barcode number has 13."
+        return None
+    if not looks_like_serial(value):
+        return "Doesn't look like a serial (10-20 letters/digits, at least 1 letter and 2 digits)."
+    return None
+
+
+# ---------- small display helpers ----------
+
+def show_photo(path: str) -> None:
+    """Show a saved photo, or say why it can't be shown.
+
+    A missing or damaged file must not crash the whole screen: the other
+    items in the queue still need to be reviewed.
+    """
+    if not os.path.exists(path):
+        st.warning(f"Photo missing: {path}")
+        return
+    try:
+        st.image(path, width="stretch")
+    except Exception as e:   # Streamlit raises PIL's error for a file that isn't an image
+        st.warning(f"Photo can't be shown ({type(e).__name__}): {path}")
+
+
+def show_erp_result(status: str, detail: str) -> None:
+    """One coloured line for what happened when an item was sent to the ERP."""
+    label = reg.ERP_LABELS.get(status, status)
+    if status == reg.ERP_SENT:
+        st.success(f"ERP: {label}. {detail}")
+    elif status in (reg.ERP_PENDING, reg.ERP_OFFLINE):
+        st.info(f"ERP: {label}. Saved in the register; it can be sent from the ERP screen later.")
+    else:
+        st.warning(f"ERP: {label}. {detail}")
+
+
+def show_match_preview(serial: str, job_id: str | None) -> None:
+    """Where this value would go on the job's manifest, before anything is posted."""
+    if not job_id or not serial:
+        return
+    try:
+        m = reg.match_preview(serial, job_id)
+    except ErpError as e:
+        st.caption(f"Manifest check unavailable: {e}")
+        return
+    if m.category == "exact":
+        st.caption(f"Manifest: matches line {m.line['line_id']} ({m.line['description']}) on {job_id}.")
+    else:
+        st.caption(f"Manifest: {reg.ERP_LABELS.get(m.category, m.category)}. {m.reason}")
+
+
 # ---------- screens ----------
 
-def scan_screen() -> None:
+def scan_screen(job_id: str | None) -> None:
     st.header("Scan a label")
     upload = st.file_uploader("Photo of a serial label or product barcode",
                               type=["jpg", "jpeg", "png"])
@@ -212,17 +154,31 @@ def scan_screen() -> None:
             st.warning(f"Needs review. Best guess: **{r['serial'] or 'nothing read'}**")
         st.write(r["reason"])
         st.caption(f"Barcode {r['t_barcode']:.1f} s, OCR {r['t_ocr']:.1f} s")
+        show_match_preview(r["serial"], job_id)
 
-        earlier = already_saved(r["serial"]) if r["serial"] else []
-        if earlier:
+        earlier = reg.already_saved(r["serial"]) if r["serial"] else []
+        saved_key = f"saved_{upload.file_id}"
+        if earlier and saved_key not in st.session_state:
             st.info(f"Already in the register {len(earlier)} time(s), first on "
                     f"{earlier[0]['scanned_at']} (status: {earlier[0]['status']}).")
 
-        saved_key = f"saved_{upload.file_id}"
+        # Accepted items go straight on to the ERP; uncertain ones wait for the Review screen.
+        will_post = job_id is not None and r["status"] == "accepted"
         if saved_key in st.session_state:
-            st.success(f"Saved as item #{st.session_state[saved_key]}.")
-        elif st.button("Save to register", type="primary", disabled=not r["serial"]):
-            st.session_state[saved_key] = save_item(photo_bytes, upload.name, r)
+            item_id, erp_result = st.session_state[saved_key]
+            st.success(f"Saved as item #{item_id}.")
+            if erp_result:
+                show_erp_result(*erp_result[:2])
+            elif r["status"] != "accepted":
+                st.info("It's in the Review queue; it goes to the ERP once a person confirms it.")
+        elif st.button("Save and send to ERP" if will_post else "Save to register",
+                       type="primary", disabled=not r["serial"]):
+            item_id = reg.save_item(photo_bytes, upload.name, r)
+            erp_result = None
+            if will_post:
+                with st.spinner("Sending to the ERP..."):
+                    erp_result = reg.post_item(item_id, job_id)
+            st.session_state[saved_key] = (item_id, erp_result)
             st.rerun()   # redraw now, so the "Saved" message replaces the button
 
     with st.expander("What the reader saw"):
@@ -234,23 +190,28 @@ def scan_screen() -> None:
         st.text_area("Raw OCR text", r["ocr_text"], height=200)
 
 
-def review_screen() -> None:
+def review_screen(job_id: str | None) -> None:
     st.header("Review queue")
-    items = review_items()
+    items = reg.review_items()
     if not items:
         st.success("Nothing to review.")
         return
     st.write(f"{len(items)} item(s) the reader wasn't sure about. Check each photo, "
-             "correct the value if needed, then confirm.")
+             "correct the value if needed, then confirm."
+             + (f" Confirmed items are sent to {job_id}." if job_id else ""))
 
     for item in items:
+        value_key = f"value_{item['id']}"
+        # The value lives in session_state (not value=...), so the "Use this"
+        # buttons below can fill it in from a manifest line.
+        if value_key not in st.session_state:
+            st.session_state[value_key] = item["serial"]
+
         # border=True draws a box around each item so they're easy to tell apart.
         with st.container(border=True):
             left, right = st.columns([1, 1])
-            if os.path.exists(item["photo_path"]):
-                left.image(item["photo_path"], width="stretch")
-            else:
-                left.warning(f"Photo missing: {item['photo_path']}")
+            with left:
+                show_photo(item["photo_path"])
 
             with right:
                 st.subheader(f"Item #{item['id']}")
@@ -262,19 +223,27 @@ def review_screen() -> None:
                 with st.form(key=f"review_{item['id']}"):
                     # Uppercased and stripped: labels print serials in capitals, and
                     # stray spaces from copy-paste would make the same serial look different.
-                    value = st.text_input("Serial / product number", value=item["serial"]).strip().upper()
+                    value = st.text_input("Serial / product number", key=value_key).strip().upper()
                     notes = st.text_input("Notes (optional)", value=item["notes"] or "")
                     problem = format_problem(value)
                     if problem:
                         st.warning(problem)
                     confirm_col, delete_col = st.columns(2)
-                    confirmed = confirm_col.form_submit_button("Confirm", type="primary",
-                                                               disabled=not value)
+                    confirmed = confirm_col.form_submit_button(
+                        "Confirm and send" if job_id else "Confirm", type="primary", disabled=not value)
                     deleted = delete_col.form_submit_button("Delete scan")
 
+                show_match_preview(value, job_id)
+                use_manifest_buttons(item["id"], value, job_id, value_key)
+
                 if confirmed:
-                    confirm_item(item["id"], value, notes)
-                    st.toast(f"Item #{item['id']} confirmed as {value}")
+                    reg.confirm_item(item["id"], value, notes)
+                    message = f"Item #{item['id']} confirmed as {value}"
+                    if job_id:
+                        status, _, _ = reg.post_item(item["id"], job_id)
+                        message += f"; ERP: {reg.ERP_LABELS.get(status, status)}"
+                    del st.session_state[value_key]
+                    st.toast(message)
                     st.rerun()   # redraw: the confirmed item leaves the queue
                 if deleted:
                     # Deleting can't be undone, so ask once more.
@@ -283,27 +252,51 @@ def review_screen() -> None:
                     st.error("Delete this scan and its photo? This can't be undone.")
                     yes, no = st.columns(2)
                     if yes.button("Yes, delete", key=f"yes_{item['id']}"):
-                        delete_item(item["id"])
+                        reg.delete_item(item["id"])
                         del st.session_state[f"really_delete_{item['id']}"]
+                        st.session_state.pop(value_key, None)
                         st.rerun()
                     if no.button("Cancel", key=f"no_{item['id']}"):
                         del st.session_state[f"really_delete_{item['id']}"]
                         st.rerun()
 
 
+def use_manifest_buttons(item_id: int, value: str, job_id: str | None, value_key: str) -> None:
+    """For a near match, one button per manifest line it could be: fills in that line's identifier.
+
+    The person still has to press Confirm, so nothing is changed without a human
+    looking at the photo and the line side by side.
+    """
+    if not job_id or not value:
+        return
+    try:
+        m = reg.match_preview(value, job_id)
+    except ErpError:
+        return
+    if m.category != "near_match":
+        return
+    for line in m.candidates:
+        # on_click runs BEFORE the next re-run draws the page. Setting the text box's
+        # value after it's been drawn is an error in Streamlit, so it has to happen here.
+        st.button(f"Use line {line['line_id']}: {line['identifier']} ({line['description']})",
+                  key=f"use_{item_id}_{line['line_id']}",
+                  on_click=st.session_state.__setitem__, args=(value_key, line["identifier"]))
+
+
 def assets_screen() -> None:
     st.header("Assets")
-    df = all_items()
+    df = reg.all_items()
     if df.empty:
         st.info("The register is empty. Scan a label to add the first item.")
         return
 
     # Headline numbers for the whole register (before any filter).
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Items", len(df))
     c2.metric("Devices", int((df.item_type == "device").sum()))
     c3.metric("Products", int((df.item_type == "product").sum()))
     c4.metric("Waiting for review", int((df.status == "needs_review").sum()))
+    c5.metric("Received on ERP", int((df.erp_status == reg.ERP_SENT).sum()))
 
     f1, f2, f3 = st.columns([2, 1, 1])
     query = f1.text_input("Search serial, person or notes").strip().lower()
@@ -318,6 +311,8 @@ def assets_screen() -> None:
                | shown.assigned_to.str.lower().str.contains(query, regex=False)
                | shown.notes.str.lower().str.contains(query, regex=False))
         shown = shown[hit]
+    # Show the ERP state in words ("Received") rather than the stored code ("sent").
+    shown = shown.assign(erp_status=shown.erp_status.map(lambda s: reg.ERP_LABELS.get(s, s)))
     st.caption(f"Showing {len(shown)} of {len(df)} items. "
                "Edit 'Assigned to' and 'Notes' in the table, then press Save changes.")
 
@@ -326,12 +321,13 @@ def assets_screen() -> None:
     # stay as they are here.
     edited = st.data_editor(
         shown, hide_index=True, width="stretch",
-        disabled=[c for c in ASSET_COLUMNS if c not in ("assigned_to", "notes")],
+        disabled=[c for c in reg.ASSET_COLUMNS if c not in ("assigned_to", "notes")],
         column_config={
             "id": st.column_config.NumberColumn("#", width="small"),
             "serial": "Serial / product number",
             "item_type": "Type",
             "status": "Status",
+            "erp_status": "ERP",
             "assigned_to": st.column_config.TextColumn("Assigned to"),
             "notes": st.column_config.TextColumn("Notes"),
             "scanned_at": "Scanned",
@@ -347,7 +343,7 @@ def assets_screen() -> None:
 
     save_col, export_col = st.columns(2)
     if save_col.button(f"Save changes ({len(changed)})", type="primary", disabled=changed.empty):
-        update_details([(r.assigned_to.strip(), r.notes.strip(), int(i)) for i, r in changed.iterrows()])
+        reg.update_details([(r.assigned_to.strip(), r.notes.strip(), int(i)) for i, r in changed.iterrows()])
         st.toast(f"Saved {len(changed)} item(s)")
         st.rerun()
     # Exports what's on screen (after filters), e.g. "all laptops assigned to Sam".
@@ -355,19 +351,128 @@ def assets_screen() -> None:
                                file_name="assets.csv", mime="text/csv")
 
 
+def erp_screen(job_id: str | None, online: bool) -> None:
+    st.header("ERP")
+    if not online:
+        st.error("The ERP isn't reachable. Start it in a second terminal:  `python mock_erp.py serve`")
+        return
+    if job_id is None:
+        st.warning("No job on the ERP yet. Create one:  "
+                   "`python mock_erp.py seed --job JOB-0001 --from truth.csv`")
+        return
+
+    try:
+        lines = reg.erp().get_lines(job_id)
+    except ErpError as e:
+        st.error(f"Couldn't load {job_id}: {e}")
+        return
+
+    # 1. Progress on the job's manifest.
+    expected = sum(line["quantity"] for line in lines)
+    received = sum(min(line["received"], line["quantity"]) for line in lines)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Manifest lines", len(lines))
+    c2.metric("Received", f"{received} / {expected}")
+    c3.metric("Waiting to send", reg.pending_count(job_id))
+    st.progress(received / expected if expected else 0.0)
+
+    with st.expander(f"Manifest of {job_id}", expanded=False):
+        st.dataframe(
+            [{"Line": line["line_id"], "Identifier": line["identifier"], "Type": line["identifier_type"],
+              "Description": line["description"], "Received": f"{line['received']} / {line['quantity']}"}
+             for line in lines],
+            hide_index=True, width="stretch")
+
+    # 2. Posts waiting in the outbox (the ERP was down or busy when they were made).
+    st.subheader("Waiting to send")
+    n_pending = reg.pending_count(job_id)
+    if n_pending == 0:
+        st.caption("Nothing waiting.")
+    elif st.button(f"Retry sending ({n_pending})", type="primary"):
+        with st.spinner("Sending..."):
+            error = reg.retry_pending(job_id)
+        if error:
+            st.error(f"The ERP still couldn't be reached: {error}")
+        else:
+            st.toast("All waiting items were answered by the ERP.")
+            st.rerun()
+
+    # 3. Accepted / confirmed items this job hasn't seen yet.
+    st.subheader("Not sent yet")
+    unsent = reg.unsent_items(job_id)
+    if not unsent:
+        st.caption("Every accepted or confirmed item has been sent to this job.")
+    else:
+        st.dataframe([{"#": i["id"], "Serial / product number": i["serial"], "Status": i["status"],
+                       "ERP": reg.ERP_LABELS.get(i["erp_status"] or "", i["erp_status"])} for i in unsent],
+                     hide_index=True, width="stretch")
+        if st.button(f"Send these {len(unsent)} to {job_id}"):
+            with st.spinner("Sending..."):
+                results = [reg.post_item(i["id"], job_id)[0] for i in unsent]
+            st.toast(", ".join(f"{results.count(s)} {reg.ERP_LABELS.get(s, s).lower()}"
+                               for s in dict.fromkeys(results)))
+            st.rerun()
+
+    # 4. What the ERP step couldn't decide on its own.
+    st.subheader("Needs a decision")
+    attention = reg.attention_items(job_id)
+    if not attention:
+        st.caption("Nothing.")
+    for item in attention:
+        with st.container(border=True):
+            st.write(f"**Item #{item['id']}** · {item['serial']} · "
+                     f"{reg.ERP_LABELS.get(item['erp_status'], item['erp_status'])}")
+            st.caption(item["erp_detail"])
+            if item["erp_status"] == "near_match":
+                # Same choice as on the Review screen: pick the manifest line this really is.
+                m = reg.match_preview(item["serial"], job_id)
+                for line in m.candidates:
+                    if st.button(f"It's line {line['line_id']}: {line['identifier']} "
+                                 f"({line['description']}), send it",
+                                 key=f"fix_{item['id']}_{line['line_id']}"):
+                        reg.correct_serial(item["id"], line["identifier"])
+                        status, _, _ = reg.post_item(item["id"], job_id)
+                        st.toast(f"Item #{item['id']}: {reg.ERP_LABELS.get(status, status)}")
+                        st.rerun()
+
+
 # ---------- page ----------
 
 st.set_page_config(page_title="Label Reader – Asset Register", layout="wide")
 st.sidebar.title("Asset Register")
-n_review = len(review_items())
+n_review = len(reg.review_items())
 # The options stay fixed and only their displayed text shows the count. If the
 # options themselves changed ("Review (3)" -> "Review (2)"), Streamlit would see
 # a new widget and jump back to the first screen after every confirm.
-page = st.sidebar.radio("Screen", ["Scan", "Review", "Assets"], key="page",
+page = st.sidebar.radio("Screen", ["Scan", "Review", "Assets", "ERP"], key="page",
                         format_func=lambda p: f"Review ({n_review})" if p == "Review" else p)
-if page == "Scan":
-    scan_screen()
-elif page == "Review":
-    review_screen()
+
+# ERP connection and job, shown on every screen.
+st.sidebar.divider()
+online = reg.erp_online()
+job_id = None
+if online:
+    try:
+        jobs = reg.erp().list_jobs()
+    except ErpError as e:
+        jobs = None
+        st.sidebar.error(f"ERP error: {e}")
+    if jobs:
+        st.sidebar.success("ERP connected")
+        job_id = st.sidebar.selectbox(
+            "Receiving into job", [j["job_id"] for j in jobs], key="job_id",
+            format_func=lambda j: next(f"{j} · {x['received']}/{x['expected']} received"
+                                       for x in jobs if x["job_id"] == j))
+    elif jobs == []:
+        st.sidebar.warning("ERP connected, but it has no jobs yet.")
 else:
+    st.sidebar.warning("ERP offline. Scans are still saved; send them from the ERP screen later.")
+
+if page == "Scan":
+    scan_screen(job_id)
+elif page == "Review":
+    review_screen(job_id)
+elif page == "Assets":
     assets_screen()
+else:
+    erp_screen(job_id, online)
