@@ -1,0 +1,9 @@
+# Extra packages for the mock ERP and the posting step (mock_erp.py,
+# erp_client.py, post_to_erp.py) and their tests. The rest of the pipeline
+# doesn't need them.
+#
+#   pip install -r requirements.txt -r requirements-erp.txt
+fastapi==0.156.8
+uvicorn==0.54.0
+httpx==0.28.1
+pytest==9.1.1
