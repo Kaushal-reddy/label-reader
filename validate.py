@@ -7,8 +7,9 @@ For each photo:
                (e.g. the ASUS QR codes hold a URL ending in the serial)
   2. OCR       Stage 5 reader -> pull serial candidates out of the text,
                preferring ones written right after "SN" / "S/N"
-  3. pattern   a serial must look like one: 10-20 letters/digits, with at least
-               one letter and at least two digits
+  3. pattern   an ID must look like one of:
+               - a serial: 10-20 letters/digits, at least one letter and two digits
+               - a product barcode number (EAN-13): 13 digits with a valid check digit
   4. decide    ACCEPT when barcode and OCR independently agree, allowing for
                characters OCR is known to confuse (O/0, A/4, ...). Then output
                the BARCODE's characters: barcodes carry a checksum, OCR doesn't.
@@ -35,7 +36,7 @@ from collections import Counter
 import cv2
 import pandas as pd
 
-from baseline import load_truth, normalize, out_dir_for
+from baseline import load_truth, normalize, out_dir_for, valid_ean13
 from barcode_reader import read_barcode
 from ocr_reader import read_ocr
 
@@ -47,9 +48,10 @@ PHOTOS_DIR = "photos"
 # words ("CHINA"), short codes ("12M"), dates and pure numbers.
 SERIAL_RE = re.compile(r"^(?=.*[A-Z])(?=(?:.*\d){2})[A-Z0-9]{10,20}$")
 
-# A retail product barcode number: EAN-13. (UPC-A, the 12-digit US version,
-# arrives from ZBar as EAN-13 with a leading 0.)
-PRODUCT_RE = re.compile(r"^\d{13}$")
+# Product barcode numbers (EAN-13) are all digits, so SERIAL_RE rejects them;
+# they're accepted through valid_ean13 instead (in baseline.py, shared with
+# the OCR stage), which requires a correct check digit. UPC-A, the 12-digit US
+# version, arrives from ZBar as EAN-13 with a leading 0.
 
 # Text written right after an "SN" / "S/N" / "S/N:" key on the label.
 # [^A-Z0-9]* allows the ':' and spaces in between.
@@ -73,22 +75,9 @@ def looks_like_serial(s: str) -> bool:
     return bool(SERIAL_RE.match(s))
 
 
-def check_digit_ok(code: str) -> bool:
-    """True if the last digit of an EAN-13 / UPC number is the right check digit.
-
-    Rule: from the right, skipping the check digit itself, weight the digits
-    3, 1, 3, 1, ...; the check digit tops the sum up to a multiple of 10.
-    ZBar already checks this for EAN-13 barcodes. It's checked again here so
-    the rule doesn't depend on which barcode type delivered the number (a QR
-    code holding 13 digits has no such check).
-    """
-    digits = [int(c) for c in code]
-    total = sum(d * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(digits[:-1])))
-    return (10 - total % 10) % 10 == digits[-1]
-
-
-def looks_like_product_code(s: str) -> bool:
-    return bool(PRODUCT_RE.match(s)) and check_digit_ok(s)
+def looks_like_id(s: str) -> bool:
+    """An equipment serial OR a product barcode number."""
+    return looks_like_serial(s) or valid_ean13(s)
 
 
 def same_modulo_confusions(a: str, b: str) -> bool:
@@ -106,11 +95,11 @@ def barcode_candidates(values: list[str]) -> list[str]:
     """
     out = []
     for v in values:
-        if looks_like_product_code(v.strip()):
+        if valid_ean13(v.strip()):
             out.append(v.strip())      # the whole value is a product number
             continue
         for piece in re.split(r"[^A-Za-z0-9]+", v.upper()):
-            if looks_like_serial(piece):
+            if looks_like_id(piece):
                 out.append(piece)
     return out
 
@@ -130,6 +119,13 @@ def ocr_candidates(text: str) -> tuple[list[str], list[str]]:
         for token in re.findall(r"[A-Z0-9]+", line):
             if looks_like_serial(token):
                 unlabelled[token] += 1
+        # Product barcode numbers are printed in digit groups under the bars
+        # ("9 341234 567890"), so OCR returns them as separate words. Join digit
+        # groups on the same line, then look for exactly 13 digits in a row.
+        joined = re.sub(r"(?<=\d)[\s\-]+(?=\d)", "", line)
+        for number in re.findall(r"(?<!\d)\d{13}(?!\d)", joined):
+            if valid_ean13(number):
+                unlabelled[number] += 1
     return [s for s, _ in labelled.most_common()], [s for s, _ in unlabelled.most_common()]
 
 
@@ -152,13 +148,14 @@ def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str],
             if same_modulo_confusions(b, o):
                 return ("accepted", b, "barcode+ocr",
                         f"barcode and OCR agree except OCR look-alikes (OCR read {o})")
-    # 2) Product barcode. The only text that could confirm it is the same digits
-    #    printed small under the bars, and OCR can't read those (0 of 14 product
-    #    photos exact). So the barcode stands alone, which is only safe when the
+    # 2) Product barcode that OCR didn't confirm. The only text that could is the
+    #    digits printed small next to the bars (ocr_reader.read_barcode_digits),
+    #    and on curved or glary packaging OCR still misses those. So the barcode
+    #    may stand alone, which is only safe when the
     #    check digit is valid, ZBar read it one way only (on a curved can it once
     #    read a second, wrong number that also had a valid check digit), AND more
     #    than one image variant read it (single wrong reads pass the other two checks).
-    products = list(dict.fromkeys(b for b in bc if looks_like_product_code(b)))
+    products = list(dict.fromkeys(b for b in bc if valid_ean13(b)))
     if len(products) > 1:
         return ("needs_review", products[0], "barcode",
                 f"several product barcodes read: {', '.join(products)}")

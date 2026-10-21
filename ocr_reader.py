@@ -37,8 +37,10 @@ import pytesseract
 from pytesseract import Output
 
 import baseline  # noqa: F401  (sets pytesseract's path to the tesseract program)
-from baseline import found, load_truth, normalize, out_dir_for
+from baseline import found, load_truth, normalize, out_dir_for, valid_ean13
 from label_finder import crop_rotated, find_label_boxes
+from pyzbar import pyzbar
+from pyzbar.pyzbar import ZBarSymbol
 from tess_direct import load_engine
 
 PHOTOS_DIR = "photos"
@@ -51,6 +53,9 @@ TARGET_TEXT_HEIGHT = 30   # px; Tesseract is tuned for text roughly this tall
 # a mousepad crop on Mouse_1 had 34 "lines" and cost ~10 s of OCR.
 MIN_LINE_WIDTH = 4        # in text heights
 ORIENTATION_SAMPLE = 3    # decide upside-down from this many of the widest lines
+# Pieces of text on the same row closer than this (in character heights) are one
+# line. Sized for the gaps between the digit groups under a product barcode.
+ROW_MERGE_GAP = 1.5
 
 # An axis-aligned box inside a crop: (x, y, width, height), as cv2.boundingRect gives.
 Box = tuple[int, int, int, int]
@@ -68,15 +73,18 @@ if ENGINE is not None:
     atexit.register(ENGINE.close)   # free Tesseract's memory when Python exits
 
 
-def ocr_with_confidence(img: np.ndarray, config: str) -> tuple[str, float]:
+def ocr_with_confidence(img: np.ndarray, config: str, whitelist: str = "") -> tuple[str, float]:
     """Run Tesseract and return (text, mean word confidence 0-100).
 
-    config is pytesseract-style, e.g. "--psm 7".
+    config is pytesseract-style, e.g. "--psm 7". whitelist, if given, limits the
+    characters Tesseract may output (e.g. "0123456789").
     """
     if ENGINE is not None:
         psm = int(re.search(r"--psm (\d+)", config).group(1))
-        pairs = ENGINE.words(img, psm)
+        pairs = ENGINE.words(img, psm, whitelist)
     else:
+        if whitelist:
+            config += f" -c tessedit_char_whitelist={whitelist}"
         d = pytesseract.image_to_data(img, config=config, output_type=Output.DICT)
         pairs = [(word, float(conf)) for word, conf in zip(d["text"], d["conf"])]
     words, confs = [], []
@@ -152,17 +160,43 @@ def find_text_lines(gray: np.ndarray) -> list[Box]:
     if hierarchy is None:
         return []
 
-    lines = []
+    pieces = []
     for c, (_, _, _, parent) in zip(contours, hierarchy[0]):
         if parent != -1:
             continue    # this contour is the inside edge of a hole, not a shape
         x, y, w, h = cv2.boundingRect(c)
         if h < 0.5 * char_h or h > 2.5 * char_h:
             continue    # too small = noise; too tall = barcode, QR code, logo
-        if w < MIN_LINE_WIDTH * h:
-            continue    # too short to hold a serial (see MIN_LINE_WIDTH)
-        lines.append((x, y, w, h))
+        pieces.append((x, y, w, h))
+
+    # Merge pieces of the same line BEFORE the width filter. The digits under a
+    # product barcode are printed in groups ("4 006381 333931") with the
+    # barcode's long guard bars between them, so each group came out as its own
+    # "line" - and the lone leading '4' was then thrown away as too short.
+    lines = merge_same_row(pieces, max_gap=ROW_MERGE_GAP * char_h)
+    lines = [b for b in lines if b[2] >= MIN_LINE_WIDTH * b[3]]   # too short for a serial
     return sorted(lines, key=lambda b: (b[1], b[0]))
+
+
+def merge_same_row(boxes: list[Box], max_gap: float) -> list[Box]:
+    """Join boxes that sit on the same row with at most max_gap pixels between them.
+
+    "Same row" = they overlap vertically by at least half the smaller box's height.
+    Boxes are visited left to right, so each one only needs checking against
+    the right-hand end of the rows built so far.
+    """
+    rows: list[Box] = []
+    for x, y, w, h in sorted(boxes):                       # sorted by x
+        for i, (rx, ry, rw, rh) in enumerate(rows):
+            overlap = min(y + h, ry + rh) - max(y, ry)
+            gap = x - (rx + rw)
+            if overlap >= 0.5 * min(h, rh) and gap <= max_gap:
+                x0, y0 = min(x, rx), min(y, ry)
+                rows[i] = (x0, y0, max(x + w, rx + rw) - x0, max(y + h, ry + rh) - y0)
+                break
+        else:
+            rows.append((x, y, w, h))
+    return rows
 
 
 def line_image(gray: np.ndarray, box: Box) -> np.ndarray:
@@ -267,7 +301,112 @@ def chars_wrong(true_serial: str, text: str) -> int:
 METHODS = [
     ("whole_crop", lambda crop, prefix: read_whole_crop(crop)),
     ("lines",      lambda crop, prefix: read_lines(crop, prefix)),
+    ("barcode_digits", lambda crop, prefix: "\n".join(read_barcode_digits(crop))),
 ]
+
+
+# ---------- method 3: the digits printed next to a product barcode ----------
+#
+# On product barcodes (EAN-13) the digits are printed touching the bars, with the
+# long "guard bars" running down between the digit groups. Methods 1 and 2 both
+# fail there: the line finder merges digits + bars into one tall blob and skips
+# it, and whole-crop OCR is confused by the bars. So this method uses the barcode
+# itself as a map: ZBar says where the bars are, the digits are right next to them.
+
+DIGIT_BAND = 0.16      # height of the strip searched for digits, as a fraction of the bar width
+BAR_ROW_MATCH = 0.85   # a row still belongs to the bars if >= 85% of it matches a nearby bar row
+
+
+def bar_rows(ink: np.ndarray, y_mid: int) -> tuple[int, int]:
+    """First and last row of the bars, starting from a row known to cross them.
+
+    ink is True where the bar columns are dark. ZBar's box doesn't cover the
+    bars' full height, so walk outwards one row at a time while each row still
+    has the same black/white pattern as the row a few pixels further in. The
+    first row that doesn't is where the digits (or blank label) begin. Comparing
+    with a NEARBY row, not one fixed row, tolerates bars that lean slightly
+    (curved cans, photos taken at an angle).
+    """
+    lag = max(2, ink.shape[1] // 100)
+
+    def same(row: int, ref: int) -> bool:
+        return (ink[row] == ink[ref]).mean() >= BAR_ROW_MATCH
+
+    top = bottom = y_mid
+    while top > 0 and same(top - 1, min(top - 1 + lag, y_mid)):
+        top -= 1
+    while bottom < ink.shape[0] - 1 and same(bottom + 1, max(bottom + 1 - lag, y_mid)):
+        bottom += 1
+    return top, bottom
+
+
+def erase_guard_bars(band: np.ndarray, bar_side_row: int, max_width: int) -> np.ndarray:
+    """Remove thin dark shapes that touch the bars' side of the strip.
+
+    Those are the guard bars continuing into the digit row - the thing that glued
+    digits and bars together. Digits don't reach that edge, so they survive.
+    """
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(band.astype(np.uint8))
+    for i in range(1, n):                     # 0 is the background
+        x, y, w, h, _ = stats[i]
+        if y <= bar_side_row <= y + h - 1 and w <= max_width:
+            band[labels == i] = False
+    return band
+
+
+def read_digit_band(band: np.ndarray) -> list[str]:
+    """OCR one strip (True = ink) as digits only; return any valid EAN-13 inside it."""
+    n, _, stats, _ = cv2.connectedComponentsWithStats(band.astype(np.uint8))
+    heights = stats[1:, cv2.CC_STAT_HEIGHT]
+    heights = heights[heights >= 0.3 * band.shape[0]]   # digit-sized shapes
+    if len(heights) < 6:
+        return []                                       # no row of digits in this strip
+    img = np.where(band, 0, 255).astype(np.uint8)       # black digits on white
+    scale = TARGET_TEXT_HEIGHT / float(np.median(heights))
+    img = cv2.resize(img, None, fx=scale, fy=scale,
+                     interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
+    pad = TARGET_TEXT_HEIGHT // 2
+    img = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
+    out = []
+    # Both ways up: Stage 4 can't tell whether the crop is upside down.
+    for im in (img, cv2.rotate(img, cv2.ROTATE_180)):
+        digits = re.sub(r"\D", "", ocr_with_confidence(im, "--psm 7", "0123456789")[0])
+        for i in range(len(digits) - 12):
+            if valid_ean13(digits[i:i + 13]):
+                out.append(digits[i:i + 13])
+    return out
+
+
+def read_barcode_digits(crop: np.ndarray) -> list[str]:
+    """Valid EAN-13 numbers read from the digits printed beside each EAN barcode in a crop.
+
+    This is OCR of the PRINTED digits; the barcode only says where to look. The
+    printed digits and the bars are separate print, so this is still an
+    independent reading for Stage 6 to compare with the decoded barcode.
+    """
+    out = []
+    for b in pyzbar.decode(crop, symbols=[ZBarSymbol.EAN13]):
+        x, y, w, h = b.rect
+        cols = crop[:, x:x + w]
+        thresh, _ = cv2.threshold(cols, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        top, bottom = bar_rows(cols < thresh, min(y + h // 2, crop.shape[0] - 1))
+
+        band_h = int(DIGIT_BAND * w)
+        # Wider than the bars: the first digit sits outside them - on the left if
+        # the crop is upright, on the RIGHT if it's upside down. So widen both sides.
+        margin = int(0.13 * w)
+        x0, x1 = max(0, x - margin), min(crop.shape[1], x + w + margin)
+        ink = crop[:, x0:x1] < thresh
+        # Strip above the bars (bars at its bottom edge) and below (bars at its top).
+        for lo, hi, bar_side in ((max(0, top - band_h), top, "bottom"),
+                                 (bottom + 1, min(crop.shape[0], bottom + 1 + band_h), "top")):
+            if hi - lo < 5:
+                continue
+            band = ink[lo:hi].copy()
+            band = erase_guard_bars(band, band.shape[0] - 1 if bar_side == "bottom" else 0,
+                                    max_width=max(3, w // 50))
+            out += read_digit_band(band)
+    return list(dict.fromkeys(out))   # unique, in the order found
 
 
 def read_ocr(img: np.ndarray) -> str:
@@ -282,6 +421,7 @@ def read_ocr(img: np.ndarray) -> str:
     for crop in get_crops(img):
         texts.append(read_whole_crop(crop))
         texts.append(read_lines(crop))
+        texts.extend(read_barcode_digits(crop))   # product barcodes: the printed digits
     return "\n".join(texts)
 
 

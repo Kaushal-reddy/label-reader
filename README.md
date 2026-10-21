@@ -1,7 +1,7 @@
 # Label Reader
 
 Reads serial numbers from phone photos of IT equipment labels (laptops, mice),
-using classical computer vision only: **OpenCV**, **ZBar** (barcodes, via pyzbar)
+and product barcode numbers (EAN-13) from retail packaging, using classical computer vision only: **OpenCV**, **ZBar** (barcodes, via pyzbar)
 and **Tesseract** (OCR, via pytesseract). No deep-learning models.
 
 The design goal is **never to save a wrong serial**. A serial is accepted only
@@ -47,10 +47,19 @@ digit `0`, `A` vs `4`), which is what the barcode cross-check in Stage 6 catches
 For example, on `Laptop_3` OCR read `TCNOCV…` (letter O); the barcode confirmed it
 and supplied the correct `TCN0CV…` (digit 0). (Serials are shortened in this README; see [Data](#data).)
 
-Product barcodes are the opposite case: OCR is useless on the small digits under
-the bars, but the barcode reader gets 13 of 14. They are accepted
-on the barcode alone, guarded by the check digit and ZBar's vote count (Stage 3);
-that guard sent the one photo with a phantom read (`Monster_Horizontal`) to review.
+Product barcodes are the opposite case: plain OCR is useless on the small digits
+under the bars, but the barcode reader gets 13 of 14. A product barcode is
+accepted when the barcode-guided digit OCR (Stage 5) reads the same number, or
+otherwise on the barcode alone, guarded by the check digit and ZBar's vote count
+(Stage 3); that guard sent the one photo with a phantom read (`Monster_Horizontal`)
+to review.
+
+> The tables above were measured before the barcode-digit OCR (Stage 5) was
+> merged in, so its effect isn't in them yet. Measured on its own on an earlier
+> 24-photo set (full-size product photos, without the 2-variant rule), it read
+> the digits exactly on 8 of 12 product photos with no wrong numbers, and raised
+> product photos accepted by barcode + OCR agreement from 2/12 to 9/12.
+> Run `python evaluate.py` to measure the merged pipeline.
 
 ## How it works
 
@@ -106,9 +115,10 @@ threshold picked 32–66 here, because most of each photo is texture. Label text
 measured 0.44–0.64 edge density and textures about 0.3, so the cut-off is 0.40.
 
 ### Stage 5 – OCR (`ocr_reader.py`)
-Two methods run on every crop and both outputs are kept:
+Three methods run on every crop and all outputs are kept:
 - **Whole crop**: the crop as one text block (`--psm 6`).
 - **Line by line**: OpenCV finds each text line, and Tesseract reads each one alone (`--psm 7`).
+- **Barcode digits**: for product barcodes only, the digits printed next to the bars (below).
 
 Line by line exists because **a barcode inside a crop breaks Tesseract's layout
 analysis**. A clean `S/N: PM2130H…` crop read as `aa` whole, but exactly
@@ -116,7 +126,25 @@ right once the line was cut out on its own. Per line:
 - blobs taller than 2.5× the character height are skipped (barcodes, QR codes, logos), and so are lines too short to hold a 10-character serial;
 - polarity is fixed per line (one crop can contain both dark-on-light and light-on-dark text);
 - each line is resized so the text is ~30 px tall, the size Tesseract is tuned for;
+- pieces on the same row with a small gap (≤ 1.5 character heights) are joined first, so a number printed in groups (`4 006381 333931`) becomes one line instead of short pieces that get thrown away;
 - whether the crop is upside down is decided **once per crop**, from the summed Tesseract confidence of its 3 widest lines read both ways.
+
+**Barcode digits.** The digits under a product barcode touch its long guard
+bars, so the line finder joined digits and bars into one tall blob and skipped it
+as "a barcode". Whole-crop OCR was confused by the bars as well. So for every
+EAN-13 barcode ZBar finds in a crop, the barcode is used as a guide instead:
+1. Find exactly where the bars start and end: walk outward from the middle of the
+   barcode, row by row, while each row still has the same bar pattern as a row a
+   few pixels further in.
+2. Cut a thin strip just past **both** ends, because a crop can be upside down.
+3. Erase the thin guard bars that reach into the strip.
+4. OCR the strip with Tesseract limited to the digits 0–9, the right way up and upside down.
+5. Keep only a 13-digit number with a valid EAN-13 check digit.
+
+The barcode only says *where* to look; Tesseract reads the digits from the pixels
+without seeing ZBar's value, so OCR and barcode are still two independent
+readings when Stage 6 compares them. This method read 8 of the 12 product photos
+exactly, with no wrong numbers.
 
 **Calling Tesseract directly (`tess_direct.py`).** pytesseract starts a new
 `tesseract.exe` for every call: it saves the image to a temp file, loads the
@@ -132,11 +160,11 @@ and identical results on every photo; average OCR time per photo fell from
 pytesseract automatically (`check_setup.py` reports which path is in use).
 
 ### Stage 6 – Validation (`validate.py`)
-1. **Barcode candidates**: serial-shaped pieces of the decoded values (the ASUS QR codes hold a URL ending in the serial).
-2. **OCR candidates**: text right after `SN` / `S/N:` first, then any serial-shaped word.
-3. **Pattern**: 10–20 letters/digits, at least one letter and two digits. Deliberately generic, not built from the test serials.
+1. **Barcode candidates**: serial-shaped pieces of the decoded values (the ASUS QR codes hold a URL ending in the serial), or a valid EAN-13 number.
+2. **OCR candidates**: text right after `SN` / `S/N:` first, then any serial-shaped word, then any valid EAN-13 number (digit groups separated by spaces or dashes are joined first).
+3. **Pattern**: a serial is 10–20 letters/digits, at least one letter and two digits. Deliberately generic, not built from the test serials. A product number must be exactly 13 digits whose last digit is the correct EAN-13 check digit; that catches any single wrong digit (but not every combination of several).
 4. **Decision**: accept when a barcode candidate and an OCR candidate agree, allowing for OCR look-alikes (O/0, I/1, A/4, …). The **barcode's** characters are saved, because barcodes carry a checksum and OCR doesn't.
-5. **Product barcodes** (EAN-13, 13 digits, on retail packaging) can't get that second opinion: the only matching text is the same digits printed small under the bars, which OCR got exactly right on 0 of 14 product photos. So an EAN-13 is accepted **on its own**, but only if its check digit is valid (checked again in `validate.py`), ZBar read it **one way only**, and **at least 2 image variants** read the same number (Stage 3). Anything else sends it to review, with the majority value as the best guess.
+5. **Product barcodes** (EAN-13, on retail packaging): the only matching text is the same digits printed small under the bars. The barcode-digit OCR (Stage 5) reads them on many photos, and then step 4 accepts as usual. When it can't (curved packaging, glare), an EAN-13 is accepted **on its own**, but only if its check digit is valid, ZBar read it **one way only**, and **at least 2 image variants** read the same number (Stage 3). Anything else sends it to review, with the majority value as the best guess.
 
 Running OCR twice does not count as two sources: both methods use the same engine
 on the same crop and make the same mistakes. Accepting OCR-only results would have
@@ -202,6 +230,10 @@ taken at 8064×4536 and shrunk to 4032×2268 by `shrink_photos.py` (see Usage).
 For products the "serial" is the 13-digit EAN-13 number. It identifies the
 product, not the individual item, so both photos of a product share it.
 
+`truth.csv` must be saved as plain text. Opened and saved in Excel, long numbers
+become e.g. `9.34E+12` and the real digits are lost; `load_truth()` refuses such
+values. Rows whose photo is missing are skipped with a warning.
+
 To run the project on your own photos, put them in `photos/` and create
 `truth.csv` (see `truth.example.csv` for the format: `filename,true_serial`, one
 row per photo).
@@ -265,7 +297,7 @@ adds the variant figure), prints every table, and writes a PNG + CSV for each to
 ## Limitations
 
 - **Small test set**: 12 serial-label photos of 5 devices (3 laptops, 2 mice) and 14 product photos of 7 products. Within a group, one photo moves a rate by 7–8 points.
-- **Tuned on the test set**: thresholds (edge strength 90, density 0.40, line sizes) were chosen by looking at the first 12 photos, the look-alike list includes `A/4` because it showed up here, and the 3× vote margin in Stage 3 was set from the one phantom read seen (true value 3.6× to 168× ahead). There is no held-out set, so real-world accuracy is probably lower.
+- **Tuned on the test set**: thresholds (edge strength 90, density 0.40, line sizes, the digit-strip size) were chosen by looking at these same photos, the look-alike list includes `A/4` because it showed up here, and the 3× vote margin in Stage 3 was set from the one phantom read seen (true value 3.6× to 168× ahead). There is no held-out set, so real-world accuracy is probably lower.
 - **One hand-edited photo**: `Mouse_2_Sideangle.jpeg` was cropped by hand to remove books from the background. Its label is still not found.
 - **Known failures**:
   - `Laptop_1_variant`, `Mouse_2_Sideangle`: label not found (dim, small, or low-contrast print on a dark label).
@@ -290,10 +322,10 @@ adds the variant figure), prints every table, and writes a PNG + CSV for each to
 ```
 check_setup.py     Stage 0  checks OpenCV, pyzbar, Tesseract (both paths), pandas, matplotlib
 native_libs.py     setup    finds Tesseract and ZBar on Windows / macOS / Linux
-baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize()/found()
+baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize(), found(), valid_ean13(), load_truth()
 barcode_reader.py  Stage 3  read_barcode(): retries + barcode-type filter
 label_finder.py    Stage 4  find_label_boxes(), crop_rotated()
-ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line OCR
+ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line + barcode-digit OCR
 tess_direct.py     Stage 5  TessEngine: Tesseract's C API via ctypes (no process per call)
 validate.py        Stage 6  the pipeline: candidates, pattern check, agreement, CSVs
 evaluate.py        Stage 7  accuracy per stage + timing → output/evaluation/

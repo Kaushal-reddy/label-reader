@@ -43,10 +43,20 @@ def load_truth(folder: str | None = None) -> pd.DataFrame:
     `python evaluate.py photos/ean_dataset`. A dataset's truth.csv may have a
     `checked` column (values typed by hand and still being checked): only rows
     marked "yes" are used, so unverified values never count.
+
+    Every value is read as TEXT (dtype=str). By default pandas would turn the
+    product number '0123456789012' into the number 123456789012 (leading zero
+    lost) and it would never equal the text a barcode reader returns.
+
+    Two checks stop a broken file from quietly changing the results:
+    - Excel shows long numbers as e.g. 9.34E+12 and, when saving, writes that
+      ROUNDED form - the real digits are gone, so such values are refused.
+    - Rows whose photo is missing are dropped WITH a printed warning, so a
+      missing photo neither crashes a run nor silently changes the totals.
     """
-    if not folder:
-        return pd.read_csv("truth.csv", dtype=str)
-    truth = pd.read_csv(os.path.join(folder, "truth.csv"), dtype=str, keep_default_na=False)
+    photos_dir = folder or PHOTOS_DIR
+    path = os.path.join(folder, "truth.csv") if folder else "truth.csv"
+    truth = pd.read_csv(path, dtype=str, keep_default_na=False)
     # Some CSV editors pad columns with spaces to line them up; drop that.
     truth.columns = truth.columns.str.strip()
     truth = truth.apply(lambda col: col.str.strip())
@@ -54,7 +64,19 @@ def load_truth(folder: str | None = None) -> pd.DataFrame:
         skipped = int((truth.checked != "yes").sum())
         truth = truth[(truth.checked == "yes") & (truth.true_serial != "")]
         print(f"Using {len(truth)} checked rows ({skipped} not checked yet, skipped)\n")
-    return truth
+
+    broken = truth[truth.true_serial.str.contains(r"^\d(?:\.\d+)?E\+\d+$", case=False)]
+    if len(broken):
+        rows = ", ".join(f"{f}={s}" for f, s in zip(broken.filename, broken.true_serial))
+        raise ValueError(
+            f"{len(broken)} serial(s) in {path} look like Excel scientific notation, so "
+            f"their digits are lost: {rows}. Re-type them from the labels in a text "
+            f"editor (or format the Excel column as Text first).")
+    exists = truth.filename.map(lambda f: os.path.exists(os.path.join(photos_dir, f)))
+    if not exists.all():
+        print(f"WARNING: skipping {(~exists).sum()} row(s) of {path} with no photo in "
+              f"{photos_dir}/: {', '.join(truth.filename[~exists])}")
+    return truth[exists].reset_index(drop=True)
 
 
 def out_dir_for(folder: str | None, stage: str) -> str:
@@ -82,6 +104,26 @@ def found(true_serial: str, text: str) -> bool:
     Picking the right line is Stage 6's job (validation).
     """
     return normalize(true_serial) in normalize(text)
+
+
+def valid_ean13(s: str) -> bool:
+    """True if s is 13 digits whose last digit is the correct EAN-13 check digit.
+
+    EAN-13 is the product barcode number on retail packaging. UPC-A codes (12
+    digits, US) come out of ZBar as EAN-13 with a leading 0, so they count too.
+
+    The check digit is computed from the first 12: weight them 1,3,1,3,...,
+    add up, and take whatever brings the total to the next multiple of 10.
+    E.g. 400638133393 -> 4*1+0*3+0*1+6*3+3*1+8*3+1*1+3*3+3*1+3*3+9*1+3*3 = 89,
+    next multiple of 10 is 90, so the check digit is 1: 4006381333931.
+    Any SINGLE wrong digit always breaks the check. Some combinations of errors
+    don't (e.g. two neighbouring digits swapped when they differ by 5) - one
+    reading on Monster_Horizontal had three wrong digits and still passed.
+    """
+    if not re.fullmatch(r"\d{13}", s):
+        return False
+    total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(s[:12]))
+    return (10 - total % 10) % 10 == int(s[12])
 
 
 def read_barcodes(gray: np.ndarray) -> list[Barcode]:

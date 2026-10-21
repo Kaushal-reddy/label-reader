@@ -84,6 +84,7 @@ class TessEngine:
             "TessBaseAPICreate":            ([], p),
             "TessBaseAPIInit3":             ([p, ctypes.c_char_p, ctypes.c_char_p], ctypes.c_int),
             "TessBaseAPISetPageSegMode":    ([p, ctypes.c_int], None),
+            "TessBaseAPISetVariable":       ([p, ctypes.c_char_p, ctypes.c_char_p], ctypes.c_int),
             "TessBaseAPISetImage":          ([p, p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int], None),
             "TessBaseAPIRecognize":         ([p, p], ctypes.c_int),
             "TessBaseAPIGetIterator":       ([p], p),
@@ -101,16 +102,21 @@ class TessEngine:
             fn.argtypes = args
             fn.restype = result
 
-    def words(self, gray: np.ndarray, psm: int) -> list[tuple[str, float]]:
+    def words(self, gray: np.ndarray, psm: int, whitelist: str = "") -> list[tuple[str, float]]:
         """OCR a grayscale image; return [(word, confidence 0-100), ...] in reading order.
 
         psm = page segmentation mode, the same number as pytesseract's '--psm N'
         (6 = one block of text, 7 = one line of text).
+        whitelist = if given, the only characters Tesseract may output
+        (e.g. "0123456789"), the same as pytesseract's '-c tessedit_char_whitelist=...'.
         """
         lib, api = self.lib, self.api
         img = np.ascontiguousarray(gray, dtype=np.uint8)   # one byte per pixel, rows back to back
         h, w = img.shape
         lib.TessBaseAPISetPageSegMode(api, psm)
+        # Always set it (empty = no restriction), so one call's whitelist can't
+        # leak into the next call: the engine is shared and remembers settings.
+        lib.TessBaseAPISetVariable(api, b"tessedit_char_whitelist", whitelist.encode())
         # (pointer to the pixels, width, height, bytes per pixel, bytes per row)
         lib.TessBaseAPISetImage(api, img.ctypes.data, w, h, 1, w)
         lib.TessBaseAPIRecognize(api, None)
