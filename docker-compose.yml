@@ -1,0 +1,40 @@
+# The asset register and the mock ERP together, with a demo job:
+#   docker compose up --build        then open http://localhost:8501
+# The demo job (JOB-DEMO) expects the synthetic photos in the app image's
+# /app/demo folder; `docker compose cp app:/app/demo ./demo` copies them out so
+# you can upload them on the Scan screen. Released images can be used instead
+# of building: set IMAGE_PREFIX=ghcr.io/<owner> and run `docker compose pull`.
+
+x-erp-credentials: &erp-credentials
+  ERP_CLIENT_ID: ${ERP_CLIENT_ID:-label-reader}
+  ERP_CLIENT_SECRET: ${ERP_CLIENT_SECRET:-dev-secret-change-me}
+
+services:
+  erp:
+    image: ${IMAGE_PREFIX:-label-reader}/label-reader-mock-erp:${TAG:-latest}
+    build: { context: ., target: mock-erp }
+    # Re-seed the demo job on every start, then serve. Add failure flags to the
+    # serve line (e.g. --fail-rate 0.3) to watch the app's outbox at work.
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        python -m label_reader.erp.mock_erp --db /data/erp.sqlite seed --job JOB-DEMO --from demo/truth.csv
+        && exec python -m label_reader.erp.mock_erp --db /data/erp.sqlite serve --host 0.0.0.0
+    environment: *erp-credentials
+    ports: ["8000:8000"]
+    volumes: [erp-data:/data]
+
+  app:
+    image: ${IMAGE_PREFIX:-label-reader}/label-reader-app:${TAG:-latest}
+    build: { context: ., target: app }
+    environment:
+      <<: *erp-credentials
+      ERP_URL: http://erp:8000
+    ports: ["8501:8501"]
+    volumes: [app-data:/data]
+    depends_on:
+      erp: { condition: service_healthy }
+
+volumes:
+  erp-data:
+  app-data:

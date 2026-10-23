@@ -1,0 +1,14 @@
+# Allowlist: only what the images need goes into the build context. photos/,
+# truth.csv, output/ and data/ hold real serial numbers, so they must never be
+# copied into an image; listing what's allowed (instead of what isn't) means a
+# new private folder can't slip in by accident.
+*
+!app.py
+!label_reader/
+!scripts/
+!pyproject.toml
+!README.md
+!requirements.txt
+!requirements-erp.txt
+!truth.example.csv
+**/__pycache__

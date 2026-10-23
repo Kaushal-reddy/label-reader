@@ -20,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 erp = ["fastapi>=0.156", "httpx>=0.28", "uvicorn>=0.54"]
 test = ["pytest>=9.1"]
+dev = ["build>=1.6", "pytest-cov>=7.1", "ruff>=0.15"]
 
 [build-system]
 requires = ["setuptools>=80"]
@@ -27,6 +28,19 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["label_reader*"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["photos", "output", "trained_model"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, bugbear. Not isort: native_libs must be imported
+# before pyzbar, which an import sorter would undo.
+select = ["E", "F", "W", "B"]
+ignore = [
+    "B905",   # zip() without strict=: the zipped columns always come from one table
+    "E731",   # small named lambdas are used on purpose (e.g. same_id's pad)
+]
 
 [tool.pytest.ini_options]
 # Tests import label_reader from the repo root without installing it.

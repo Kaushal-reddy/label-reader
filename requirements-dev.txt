@@ -1,0 +1,6 @@
+# Tools for linting, coverage and building the package (CI uses these).
+#
+#   pip install -r requirements.txt -r requirements-erp.txt -r requirements-dev.txt
+build==1.6.1
+pytest-cov==7.1.0
+ruff==0.15.4
