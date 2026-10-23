@@ -19,7 +19,7 @@ between runs.
 
 Outputs:
   output/evaluation/per_photo.csv   every measurement for every photo
-  output/evaluation/summary.md      the summary tables (ready to paste into the README)
+  output/evaluation/summary.md      the summary tables (the source of BENCHMARKS.md)
 
 analyze.py turns per_photo.csv into figures and confusion matrices.
 """

@@ -4,73 +4,48 @@
 
 Reads serial numbers from phone photos of IT equipment labels (laptops, mice),
 and product barcode numbers (EAN-13) from retail packaging, using classical computer vision only: **OpenCV**, **zxing-cpp** and **ZBar** (barcodes, via pyzbar)
-and **Tesseract** (OCR, via pytesseract). No deep-learning models.
+and **Tesseract** (OCR, via pytesseract). No deep-learning models. Accepted
+reads are then received into an asset-recording system (a mock ERP), and a small
+Streamlit app puts it all behind a browser screen.
 
 The design goal is **never to save a wrong serial**. A serial is accepted only
 when the barcode and the printed text agree. Everything else is flagged
 "needs review" with a reason and a best guess, so a person can check it quickly.
 
+| | |
+|---|---|
+| **[BENCHMARKS.md](BENCHMARKS.md)** | the test data and every measured number |
+| **[HOW_TO_RUN.md](HOW_TO_RUN.md)** | Docker, setup, every command, the app, the mock ERP, tests |
+
 ## Results
 
-Measured on 26 photos against hand-typed true values in `truth.csv`: 12 photos of
-5 IT devices with **serial labels**, and 14 photos of 7 retail products whose
-**product barcode** (EAN-13) is the value to read.
-Run `evaluate.py` to reproduce; the full tables are written to `output/evaluation/summary.md`,
-and `analyze.py` turns them into figures and confusion matrices (`output/analysis/report.md`).
-
-**Final decisions**
+On 26 photos with hand-typed true values (12 serial-label photos of 5 devices,
+14 photos of 7 retail products):
 
 | Measure | Serial labels | Product barcodes | All |
 |---|---|---|---|
 | Accepted without a human | 6/12 | 13/14 | 19/26 (73%) |
 | Accepted and **wrong** | **0** | **0** | **0** |
-| Precision (correct / accepted) | 6/6 | 13/13 | 19/19 (100%) |
 | Sent to review, best guess already correct | 4 of 6 | 1 of 1 | 5 of 7 |
-| Time per photo, mean / max (MacBook Air, median of 3 runs) | 1.4 s / 2.9 s | 0.5 s / 1.7 s | 0.9 s / 2.9 s |
+| Time per photo, mean / max (MacBook Air) | 1.4 s / 2.9 s | 0.5 s / 1.7 s | 0.9 s / 2.9 s |
 
-An earlier run of just the 12 serial-label photos on a Windows 11 laptop took
-2.4 s mean, 5.3 s max.
+On a public set of 403 product-barcode images, 244 are accepted, again with 0
+wrong. Per-stage results, the zxing-cpp comparison and the ERP demo run are in
+[BENCHMARKS.md](BENCHMARKS.md).
 
-**What each stage added** (photos where the value was read correctly)
+## Try it
 
-| Stage | Measure | Serial labels | Product barcodes |
-|---|---|---|---|
-| 2 – baseline | Barcode on the raw photo | 7/12 | 12/14 |
-| 2 – baseline | OCR on the raw photo (value anywhere in the text) | 3/12 | 4/14 |
-| 3 – barcode | zxing-cpp, then ZBar with retries + barcode-type filter | 8/12 | 14/14 |
-| 4 – label crop | Photos where a label crop was found | 10/12 | 14/14 |
-| 4 – label crop | Barcode on the crops | 7/12 | 14/14 |
-| 5 – OCR | OCR on the crops, exact | 6/12 | 8/14 |
-| 5 – OCR | OCR on the crops, within 1 character | 9/12 | 8/14 |
+```bash
+docker compose up --build         # then open http://localhost:8501
+```
 
-On serial labels, cropping the label and reading it line by line **doubled**
-exact OCR reads (3 → 6). The near misses are almost all look-alike characters (letter `O` vs
-digit `0`, `A` vs `4`), which is what the barcode cross-check in Stage 6 catches.
-For example, on `Laptop_3` OCR read `TCNOCV…` (letter O); the barcode confirmed it
-and supplied the correct `TCN0CV…` (digit 0). (Serials are shortened in this README; see [Data](#data).)
-
-Product barcodes are the opposite case: plain OCR misses the small digits under
-the bars, but the barcode reader gets 14 of 14. The barcode-guided digit OCR
-(Stage 5) reads those digits exactly on 8 of 14, and then barcode and OCR agree.
-Otherwise a product barcode is accepted on the barcode alone, guarded by the check
-digit, a check for rival reads and 2 agreeing image variants (Stage 3). That guard
-sent the one photo with a phantom read (`Supplement_Horizontal`) to review.
-
-**Adding zxing-cpp** as the first decoder (Stage 3), with ZBar as the backup,
-was measured with the same OCR on both sides (`zxing_experiment.py`):
-
-| Photos | Accepted, ZBar only | Accepted, zxing-cpp first | Accepted and wrong | Barcode step, mean / max |
-|---|---|---|---|---|
-| These 26 | 18 | 19 | 0 | 1.4 s / 3.4 s → 0.4 s / 2.2 s |
-| 403-image EAN set | 179 | 244 | 0 | 0.43 s / 1.4 s → 0.12 s / 1.3 s |
-
-(Barcode-step times: the ZBar-only times are from the experiment, the zxing-cpp
-times from `evaluate.py`, so they come from different runs.) On the EAN set the
-barcode was read on 291 photos instead of 216, and 47 photos sent to review had
-the right best guess (37 with ZBar only). The rule for accepting a product barcode on its
-own was not changed.
+This starts the asset register and the mock ERP with a demo job, and the image
+ships synthetic label photos to scan. Running without Docker, on your own
+photos: [HOW_TO_RUN.md](HOW_TO_RUN.md).
 
 ## How it works
+
+The numbers behind each design decision below are collected in [BENCHMARKS.md](BENCHMARKS.md#stage-level-measurements).
 
 ```
 photo ─┬─► barcode reader (Stage 3) ───────────────────────┐
@@ -194,149 +169,14 @@ saved one wrong serial (`Mouse_1_Sideangle`: OCR read `SCBMNVO00…` instead of 
 
 `truth.csv` is never used to make a decision, only to measure afterwards.
 
-## Setup
-
-Works on Windows, macOS and Linux. You need Python 3.12 or newer, plus two
-native programs, Tesseract 5 and ZBar, which pip can't install.
-
-1. **Native dependencies**
-
-   | OS | Command |
-   |---|---|
-   | Windows | `winget install UB-Mannheim.TesseractOCR` (ZBar ships inside the `pyzbar` package) |
-   | macOS | `brew install tesseract zbar` |
-   | Ubuntu / Debian | `sudo apt install tesseract-ocr libzbar0` |
-
-   The Windows installer doesn't add Tesseract to PATH, and apps started outside a
-   terminal may not see Homebrew's PATH. `native_libs.py` handles both: it checks
-   PATH first, then the standard install folders, and on Apple Silicon Macs
-   points pyzbar at Homebrew's `/opt/homebrew/lib`.
-   On Windows, if importing pyzbar fails, install the Microsoft Visual C++ 2013 redistributable.
-
-2. **Python packages** in a virtual environment:
-
-   ```bash
-   python -m venv .venv
-   # Windows:        .venv\Scripts\activate
-   # macOS / Linux:  source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-   This also installs zxing-cpp, the second barcode decoder. Its decoder ships
-   inside the pip package, so it needs no separate install.
-
-3. **Check everything works** (all checks should say `[OK]`):
-
-   ```bash
-   python -m scripts.check_setup
-   ```
-
-All commands below assume the venv is active and you're in the repo folder
-(the stages run as modules, `python -m label_reader.<stage>`, so they find each
-other without installing anything; `pip install -e .` also works).
-
-## Data
-
-The photos and true serials are **not in this repository**, because they contain
-the real serial numbers of my own devices. The test set was:
-
-| Item | Photos | Label | Barcode |
-|---|---|---|---|
-| Laptop 1 (ASUS) | 2: straight-on (label cut off at the frame edge), rotated + dim | Dark, white text | QR (URL ending in the serial), visible in one photo |
-| Laptop 2 (ASUS) | 3: straight-on, rotated 90°, glare | Dark, white text | QR (URL ending in the serial) |
-| Laptop 3 (ASUS) | 1: straight-on | Dark, white text, on a silver laptop | Code128 + QR |
-| Mouse 1 (ASUS) | 3: straight-on, side angle, variant | White, black text | Code128 |
-| Mouse 2 (Razer) | 3: straight-on, side angle, variant | Dark blue + silver strip, light text | Code128 |
-| 7 retail products (energy-drink can, notebook, 2 boxes, supplement, 2 bottles) | 2 each: horizontal, vertical | Printed packaging | EAN-13; the bottles also carry a QR code (a web link) |
-
-All photos were taken on a phone and used at the camera's original resolution
-(4032×2268), except `Mouse_1_variant` (3309×1861), `Mouse_2_Sideangle`
-(hand-cropped to 2268×2448, see Limitations) and the product photos. Those were
-taken at 8064×4536 and shrunk to 4032×2268 by `shrink_photos.py` (see Usage).
-
-For products the "serial" is the 13-digit EAN-13 number. It identifies the
-product, not the individual item, so both photos of a product share it.
-
-`truth.csv` must be saved as plain text. Opened and saved in Excel, long numbers
-become e.g. `9.34E+12` and the real digits are lost; `load_truth()` refuses such
-values. Rows whose photo is missing are skipped with a warning.
-
-To run the project on your own photos, put them in `photos/` and create
-`truth.csv` (see `truth.example.csv` for the format: `filename,true_serial`, one
-row per photo).
-
-## Usage
-
-With `photos/` and `truth.csv` in place:
-
-| Command | What it does | Main output |
-|---|---|---|
-| `python -m scripts.shrink_photos` | Shrinks photos larger than 4032 px to 4032 px (originals moved to `photos_original/`). Run once after adding photos | `photos/` |
-| `python -m scripts.prepare_ean_dataset` | Builds `photos/ean_dataset/` (410 single-barcode images) from the downloaded `photos/Barcode_Dataset`, runs the variant matrix, and writes a pre-filled `truth.csv` + review sheets to check | `photos/ean_dataset/`, `output/ean_dataset/` |
-| `python -m label_reader.validate` | **The pipeline**: reads every photo and decides | `output/results.csv`, `output/needs_review.csv` |
-| `python -m label_reader.evaluate` | Measures every stage against `truth.csv`, and times it | `output/evaluation/summary.md` |
-| `python -m label_reader.analyze` | Figures, confusion matrices and tables from `evaluate.py`'s results (see below) | `output/analysis/report.md` |
-| `python -m label_reader.baseline` | Stage 2: untuned barcode + OCR on raw photos | `output/baseline/` |
-| `python -m label_reader.barcode_reader` | Stage 3: barcode variant matrix (ZBar) | `output/barcode/variant_matrix.csv` |
-| `python -m scripts.zxing_experiment` | Stage 3: zxing-cpp vs ZBar, 6 decoder policies through Stage 6 (run `validate.py` first; reuses its OCR) | `output/zxing/summary.md` |
-| `python -m label_reader.label_finder` | Stage 4: label boxes, crops and debug images | `output/labels/boxes/`, `crops/`, `debug/` |
-| `python -m label_reader.ocr_reader` | Stage 5: OCR method comparison | `output/ocr/variant_matrix.csv`, `text/`, `lines/` |
-| `python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv` | Creates (or resets) a job in the mock ERP with one manifest line per item; `--leave-out Mouse_2` drops an item | `output/erp/erp.sqlite` |
-| `python -m label_reader.erp.mock_erp serve` | Runs the mock ERP on `localhost:8000` (API docs at `/docs`); failure flags below | – |
-| `python -m label_reader.erp.post_to_erp --job JOB-0001` | Stage 9: posts accepted, matched photos to the ERP and queues the rest for review | `output/erp/posted.csv`, `review_queue.csv` |
-| `streamlit run app.py` | (needs `requirements-erp.txt` too) The asset register in the browser: scan a photo, review uncertain reads, search the register, send items to the ERP ([docs/asset_register.md](docs/asset_register.md)) | `data/assets.db` |
-| `python -m pytest tests` | 63 tests: the barcode reader (synthetic barcodes), the whole pipeline on synthetic label photos, the mock ERP, the client, Stage 9, the asset register and the Streamlit app's screens (fake serials only) | – |
-| `python -m scripts.make_synthetic_dataset` | Draws 14 synthetic label photos with fake serials (serial labels, product barcodes, and labels whose printed serial disagrees with the barcode), so every stage can run without the private photos | `photos/synthetic/` |
-| `python -m scripts.erp_e2e` | Stage 9 end to end with real processes: the mock ERP failing on purpose, `post_to_erp` until nothing is pending, then checks every accepted photo was received exactly once (run `validate.py photos/synthetic` first) | – |
-
-Every stage saves its intermediate images to `output/` so failures can be inspected by eye.
-
-**Another dataset.** Every script above except `shrink_photos.py` and
-`prepare_ean_dataset.py` also takes a dataset folder holding its own photos
-and `truth.csv`. Results go to `output/<folder name>/` instead, and `truth.csv`
-rows whose `checked` column isn't `yes` are skipped. For the EAN set:
-
-```bash
-python -m label_reader.baseline photos/ean_dataset
-python -m label_reader.barcode_reader photos/ean_dataset   # also prints what Stage 6 accepts on the barcode alone
-python -m label_reader.label_finder photos/ean_dataset
-python -m label_reader.ocr_reader photos/ean_dataset
-python -m label_reader.validate photos/ean_dataset
-python -m label_reader.evaluate photos/ean_dataset
-python -m label_reader.analyze photos/ean_dataset          # after evaluate.py
-```
-
-To keep the output manageable, a dataset run skips the per-variant and per-step
-debug images, and `analyze.py` draws no one-row-per-photo figure above 60 photos
-(the CSV tables are still written).
-
-### Analysis (`analyze.py`)
-
-Reads `output/evaluation/per_photo.csv` (run `evaluate.py` first; `barcode_reader.py`
-adds the variant figure), prints every table, and writes a PNG + CSV for each to
-`output/analysis/`, all collected in `report.md`. Takes about 2 seconds.
-
-| Figure | Shows |
-|---|---|
-| `stage_accuracy` | Accuracy per stage with 95% Wilson intervals (with this few photos, they're wide); split by serial labels vs product barcodes |
-| `photo_outcomes` | Photo × stage pass/fail grid: where each photo is lost |
-| `decision_confusion` | Accepted / needs review × correct / wrong, plus precision, recall, F1 |
-| `acceptance_policies` | What looser rules would accept, and how many wrong serials they'd let through |
-| `source_agreement` | Barcode vs OCR on the same photo: how often one rescues the other |
-| `ocr_chars_wrong`, `ocr_tolerance` | Characters wrong per OCR method, and photos read within *k* characters |
-| `char_confusion` | Which characters OCR misreads, and as what (from an edit-distance alignment) |
-| `barcode_variants` | Which image variant let ZBar read each photo |
-| `by_condition` | Success by capture condition (glare, side angle, …) parsed from file names |
-| `timing` | Time per photo, split into label finding, barcode and OCR |
-
-## ERP integration (mock)
+## ERP integration
 
 Stage 9 sends the pipeline's decisions to an asset-recording system: an accepted
 serial that matches a line on the job's manifest is received automatically,
 and everything else goes to a review queue. The real target system's API isn't
 public, so `mock_erp.py` is a **generic stand-in written for this project**. It
 is not any vendor's API; it only has the parts an integration has to cope with.
-Needs the extra packages: `pip install -r requirements-erp.txt`.
+Commands: [HOW_TO_RUN.md](HOW_TO_RUN.md#the-mock-erp); a demo run under injected failures: [BENCHMARKS.md](BENCHMARKS.md#erp-demo-run).
 
 ```
 validation.csv ─► post_to_erp.py ─┬─► outbox ─► erp_client.py ─► mock_erp.py (HTTP)
@@ -368,48 +208,6 @@ validation.csv ─► post_to_erp.py ─┬─► outbox ─► erp_client.py �
   idempotency key **before** it is sent. If the ERP is down, posts stay pending
   with the last error, and the next run sends them again with the same keys.
 
-**Demo run** on the 26 photos (Mouse_2 left off the manifest), with the ERP failing
-30% of requests with a 503 and losing the reply on 30% of new receipts:
-
-```bash
-python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv --leave-out Mouse_2
-python -m label_reader.erp.mock_erp serve --fail-rate 0.3 --lost-rate 0.3 --rate-limit 5 --seed 7
-python -m label_reader.erp.post_to_erp --job JOB-0001        # in a second terminal
-```
-
-10 photos were posted and 16 went to review (8 not confident, 6 already received,
-2 not on the manifest); 10 of the 11 manifest lines were received (Laptop_1's
-photos were both "needs review"). The server answered 15 requests with 503,
-2 with a lost-response 500 and 4 with 429, and the database still held exactly one
-receipt per photo posted. Running it again posted nothing new. This is one run with
-one seed; the ERP tests (41 of the tests in `python -m pytest tests`) repeat the same checks with
-fake serials, including every line received exactly once under 50% 503s plus 50%
-lost responses, and pending posts sent after an outage.
-
-`python -m label_reader.erp.mock_erp serve --host 0.0.0.0` makes the mock reachable from other
-computers on your network. Its database holds real serials when seeded from
-`truth.csv`, so only do that on a network you trust.
-
-## Docker
-
-The asset register and the mock ERP run together with one command, with
-Tesseract and ZBar already installed in the image:
-
-```bash
-docker compose up --build         # then open http://localhost:8501
-```
-
-The ERP starts with a demo job (`JOB-DEMO`) whose manifest matches the synthetic
-photos built into the app image. Copy them out with
-`docker compose cp app:/app/demo ./demo` and upload them on the Scan screen. The
-images hold no real photos or serials: `.dockerignore` only lets the code in,
-and CI checks the built images. The pipeline also runs inside the image:
-`docker compose run --rm app python -m label_reader.validate demo`.
-
-Released images are on GitHub's container registry (`ghcr.io/kaushal-reddy/label-reader-app`
-and `label-reader-mock-erp`, for amd64 and arm64); `IMAGE_PREFIX=ghcr.io/kaushal-reddy docker compose pull`
-uses them instead of building.
-
 ## CI/CD
 
 GitHub Actions ([`.github/workflows/`](.github/workflows/)) runs on every push to `main` and every pull request:
@@ -427,25 +225,18 @@ photos are for), but they test the properties that matter on every OS: nothing
 is accepted wrongly, a label whose printed serial disagrees with its barcode
 always goes to review, and every accepted photo reaches the ERP exactly once.
 
-**Releases:** pushing a tag like `v0.2.0` (matching `version` in `pyproject.toml`)
-runs the whole CI, then creates a GitHub Release with the wheel and sdist and
-generated notes, and pushes both Docker images (amd64 + arm64, with SBOM and a
-signed build-provenance attestation) to `ghcr.io`. Dependabot opens weekly pull
-requests for outdated Python packages, actions and base images.
+**Releases:** a version tag (`v0.2.0`) runs the whole CI, then publishes a GitHub Release with the
+wheel and both Docker images (amd64 + arm64) to `ghcr.io` ([how](HOW_TO_RUN.md#releasing)).
+Dependabot opens weekly pull requests for outdated Python packages, actions and base images.
 
 ## Limitations
 
 - **Small test set**: 12 serial-label photos of 5 devices (3 laptops, 2 mice) and 14 product photos of 7 products. Within a group, one photo moves a rate by 7–8 points.
-- **Tuned on the test set**: thresholds (edge strength 90, density 0.40, line sizes, the digit-strip size) were chosen by looking at these same photos, the look-alike list includes `A/4` because it showed up here, and the 3× vote margin in Stage 3 was set from the one phantom read seen (true value 3.6× to 168× ahead). There is no held-out set, so real-world accuracy is probably lower.
+- **Tuned on the test set**: thresholds (edge strength 90, density 0.40, line sizes, the digit-strip size) were chosen by looking at these same photos, the look-alike list includes `A/4` because it showed up here, and the 3× vote margin in Stage 3 was set from the one phantom read seen. There is no held-out set, so real-world accuracy is probably lower.
 - **One hand-edited photo**: `Mouse_2_Sideangle.jpeg` was cropped by hand to remove books from the background. Its label is still not found.
-- **Known failures**:
-  - `Laptop_1_variant`, `Mouse_2_Sideangle`: label not found (dim, small, or low-contrast print on a dark label).
-  - `Laptop_2_Vertical`: OCR too far off (4 characters) to confirm the barcode.
-  - Steep side angles defeat the barcode reader: the crop corrects rotation but not perspective.
-  - `Supplement_Horizontal`: sent to review because zxing-cpp also read a wrong number at the same spot (Stage 3); the best guess is correct.
+- **Known failures** (details in [BENCHMARKS.md](BENCHMARKS.md#results-on-the-26-photos)): dim or low-contrast labels that aren't found, OCR too far off to confirm a barcode, and steep side angles, because the crop corrects rotation but not perspective.
 - **Barcode-only acceptance for products**: product barcodes are accepted without a second source. The check digit, vote margin and 2-variant agreement stopped every wrong read seen (ZBar: 1 in the 14 product photos and 8 in the 403-image EAN set; zxing-cpp: 3 and 5), but the agreement rule was chosen on that same EAN set, and the zxing-cpp-first order was chosen after measuring on the same photos, so neither has been tested on unseen photos. A wrong number read the same way by two variants would still be accepted. Confirming also costs time: zxing-cpp always reads 3 image variants, and ZBar re-reads a product barcode it found.
-- **Image quality matters most**: the first set of photos had been downscaled to 900×1600 in transfer. Replacing them with the camera originals (4032×2268) did more for barcode reading than any code change.
-  Bigger isn't better either: shrinking the 36-megapixel product photos to 4032×2268 made the pipeline 1.7× faster (worst case 9.8 s → 3.3 s) and let one more barcode decode. 3024 px or JPEG quality 75 each lost a serial-label photo, and 2016 px lost several (measured once with the full pipeline; the table is in `shrink_photos.py`).
+- **Image quality matters most**: replacing downscaled photos with the camera originals did more for barcode reading than any code change, and very large photos only cost time ([measured](BENCHMARKS.md#stage-level-measurements)).
 - **Speed**: about 0.9 s per photo on a MacBook Air (2.9 s worst case). On serial labels the biggest parts are OCR and, when zxing-cpp reads nothing, ZBar's retry, which decodes a 3× upscale of the full photo.
 
 ## What I would do next
@@ -482,6 +273,7 @@ scripts/                   setup check, dataset tools, experiments, CI checks (p
   make_synthetic_dataset.py synthetic label photos with fake serials → photos/synthetic/
   erp_e2e.py                Stage 9 end to end against a failing mock ERP (CI)
 tests/                     pytest tests: barcode reader, pipeline end to end, Stage 9, asset register, app (fake serials only)
+README.md, BENCHMARKS.md, HOW_TO_RUN.md   this overview, the measurements, the commands
 docs/
   asset_register.md         how app.py uses the pipeline, its database and the ERP
   erp_openapi.json          the mock ERP's API schema
@@ -490,7 +282,7 @@ requirements.txt           exact versions (requirements-erp.txt: ERP + tests; re
 Dockerfile                 two images: the app (with Tesseract + ZBar) and the mock ERP
 docker-compose.yml         both together, with a demo job
 .github/                   CI and release workflows, Dependabot
-photos/                    input photos (not committed; see Data)
+photos/                    input photos (not committed; see BENCHMARKS.md, Test data)
 truth.csv                  true serials (not committed); format in truth.example.csv
 output/                    everything generated (git-ignored, re-created by the scripts)
 data/                      the asset register's database and scans (git-ignored)

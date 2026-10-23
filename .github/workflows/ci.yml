@@ -82,7 +82,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements*.txt
 
-      # Tesseract and ZBar: the native programs pip can't install (README, Setup).
+      # Tesseract and ZBar: the native programs pip can't install (HOW_TO_RUN.md, Setup without Docker).
       - name: Native dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr libzbar0 libgl1
@@ -146,7 +146,7 @@ jobs:
       - name: Make the synthetic dataset (fake serials only)
         run: python -m scripts.make_synthetic_dataset photos/synthetic
 
-      # Every stage's command-line entry point, in the order the README gives.
+      # Every stage's command-line entry point, in the order HOW_TO_RUN.md gives.
       - name: Stage 2 - baseline
         run: python -m label_reader.baseline photos/synthetic
       - name: Stage 3 - barcode variant matrix

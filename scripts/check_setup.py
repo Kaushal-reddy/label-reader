@@ -55,7 +55,7 @@ def check_tesseract() -> str:
     # pytesseract is only a wrapper: it saves the image to a temp file, runs
     # the tesseract program on it, and reads the text back. So it must find it.
     exe = native_libs.find_tesseract()
-    assert exe, "tesseract not found on PATH or in the usual install folders (see README Setup)"
+    assert exe, "tesseract not found on PATH or in the usual install folders (see HOW_TO_RUN.md, Setup)"
     pytesseract.pytesseract.tesseract_cmd = exe
     version = pytesseract.get_tesseract_version()
 

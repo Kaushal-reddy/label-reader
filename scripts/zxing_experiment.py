@@ -9,7 +9,7 @@ The learned detector (branch barcode-detection) showed ZBar's failures on the EA
 set are decoding failures: the barcode is found in all 403 photos, but ZBar reads
 nothing in 178. zxing-cpp (Apache-2.0) is an independent decoder with its own
 binarizer and scanning, so this measures whether it reads bars ZBar can't, and
-which way of combining the two is safest. The result (README, Stage 3): zxing_first
+which way of combining the two is safest. The result (BENCHMARKS.md, Adding zxing-cpp): zxing_first
 accepted the most photos with none wrong, so barcode_reader.read_barcode now
 works that way. This script keeps the comparison reproducible.
 
