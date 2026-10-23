@@ -1,7 +1,7 @@
 """Turn photos/Barcode_Dataset (a downloaded object-detection set) into a test
 set for this project, and run the Stage 3 variant matrix on it.
 
-Run with:  python prepare_ean_dataset.py   (from the repo folder, with the venv active)
+Run with:  python -m scripts.prepare_ean_dataset   (from the repo folder, with the venv active)
 
 The downloaded set only has BOXES (Pascal VOC .xml: "there is a barcode here"),
 not the numbers the barcodes hold, so it can't be scored like truth.csv yet.
@@ -25,7 +25,7 @@ This script:
 
 Without checked truth the matrix can only say "decoded a valid EAN-13", not
 "decoded the RIGHT one". Re-run barcode_reader.py on the folder once checked:
-  python barcode_reader.py photos/ean_dataset
+  python -m label_reader.barcode_reader photos/ean_dataset
 """
 
 import os
@@ -36,13 +36,13 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 
-import native_libs  # noqa: F401, I001  (must come before pyzbar: lets it find ZBar on macOS)
+from label_reader import native_libs  # noqa: F401, I001  (must come before pyzbar: lets it find ZBar on macOS)
 import cv2
 import numpy as np
 import pandas as pd
 from pyzbar import pyzbar
 
-from barcode_reader import READER_VARIANTS, SYMBOLS, VARIANTS, resolve
+from label_reader.barcode_reader import READER_VARIANTS, SYMBOLS, VARIANTS, resolve
 
 SOURCE_DIR = os.path.join("photos", "Barcode_Dataset")
 DEST_DIR = os.path.join("photos", "ean_dataset")

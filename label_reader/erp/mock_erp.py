@@ -12,9 +12,9 @@ parts an integration has to cope with:
     recovery can be tested, not just assumed
 
 Run with (from the repo folder, venv active):
-  python mock_erp.py seed --job JOB-0001 --from truth.csv [--leave-out Mouse_2]
-  python mock_erp.py serve [--host 0.0.0.0] [--port 8000] [--fail-rate 0.3] ...
-  python mock_erp.py openapi          (writes docs/erp_openapi.json)
+  python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv [--leave-out Mouse_2]
+  python -m label_reader.erp.mock_erp serve [--host 0.0.0.0] [--port 8000] [--fail-rate 0.3] ...
+  python -m label_reader.erp.mock_erp openapi          (writes docs/erp_openapi.json)
 
 While it runs, the API docs are at http://localhost:8000/docs.
 

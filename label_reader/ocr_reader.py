@@ -1,6 +1,6 @@
 """Stage 5: OCR on the label crops from Stage 4, with preprocessing.
 
-Run with:  python ocr_reader.py   (from the repo folder, with the venv active)
+Run with:  python -m label_reader.ocr_reader   (from the repo folder, with the venv active)
 
 The key finding of this stage: OCR'ing a whole label crop fails when the crop
 contains a barcode or QR code. On Mouse_2 the full crop gave 'aa', but the
@@ -36,12 +36,12 @@ import pandas as pd
 import pytesseract
 from pytesseract import Output
 
-import baseline  # noqa: F401  (sets pytesseract's path to the tesseract program)
-from baseline import found, load_truth, normalize, out_dir_for, valid_ean13
-from label_finder import crop_rotated, find_label_boxes
+from label_reader import baseline  # noqa: F401  (sets pytesseract's path to the tesseract program)
+from label_reader.baseline import found, load_truth, normalize, out_dir_for, valid_ean13
+from label_reader.label_finder import crop_rotated, find_label_boxes
 from pyzbar import pyzbar
 from pyzbar.pyzbar import ZBarSymbol
-from tess_direct import load_engine
+from label_reader.tess_direct import load_engine
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "ocr")

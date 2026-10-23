@@ -1,26 +1,27 @@
-# Frontend API
+# Asset register
 
-What the Streamlit asset register is built against. It has two files:
+How the Streamlit asset register is built. It has two files:
 
 | File | Role |
 |---|---|
 | `app.py` | The screens (Scan, Review, Assets, ERP). The only file that imports Streamlit |
-| `register.py` | Storage (SQLite) and the link to the ERP. No Streamlit, so it is unit-tested (`tests/test_register.py`) |
+| `label_reader/register.py` | Storage (SQLite) and the link to the ERP. No Streamlit, so it is unit-tested (`tests/test_register.py`) |
 
 The app talks to three things:
 
 1. **The pipeline**, as in-process Python calls (section 1). There is no HTTP between the UI and the pipeline.
 2. **Its own SQLite register**, `data/assets.db` (section 3).
-3. **The mock ERP** (`mock_erp.py`, Pratham's), over HTTP. All of that goes through his `erp_client.ErpClient` and the Stage 9 helpers in `post_to_erp.py`, called from `register.py` (section 4). The app makes no raw HTTP calls of its own, except `GET /health`.
+3. **The mock ERP** (`label_reader/erp/mock_erp.py`, Pratham's), over HTTP. All of that goes through his `erp_client.ErpClient` and the Stage 9 helpers in `post_to_erp.py`, called from `register.py` (section 4). The app makes no raw HTTP calls of its own, except `GET /health`.
 
-Branch `erp-ui` (it contains `product-barcodes` and `mock-erp`). Python 3.12, Streamlit 1.66.0.
+Python 3.12, Streamlit 1.66.0.
 
 ---
 
 ## 1. Pipeline functions called
 
 The calls happen in `app.scan_photo()`, in this order. It's the same sequence as
-`validate.main()`, one photo at a time.
+`validate.main()`, one photo at a time. All of these modules are in the
+`label_reader` package (`from label_reader.barcode_reader import read_barcode`).
 
 ### 1.1 `barcode_reader.read_barcode`
 

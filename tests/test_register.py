@@ -6,9 +6,9 @@ tmp_path. Every serial here is FAKE.
 
 import pytest
 
-import register as reg
+from label_reader import register as reg
 from conftest import CLIENT_ID, CLIENT_SECRET, FAKE_EAN, FAKE_SERIAL_1, FAKE_SERIAL_2, JOB
-from erp_client import ErpClient
+from label_reader.erp.erp_client import ErpClient
 
 
 @pytest.fixture

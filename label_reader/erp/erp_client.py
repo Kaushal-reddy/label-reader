@@ -17,7 +17,7 @@ if the first try was saved but its reply was lost, the retry gets the saved
 receipt back (status 200) instead of receiving the asset twice.
 
 Usage (the ERP_URL, ERP_CLIENT_ID and ERP_CLIENT_SECRET environment variables):
-    from erp_client import ErpClient
+    from label_reader.erp.erp_client import ErpClient
     with ErpClient.from_env() as erp:
         lines = erp.get_lines("JOB-0001")
 """

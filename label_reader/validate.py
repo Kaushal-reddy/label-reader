@@ -1,6 +1,6 @@
 """Stage 6: validation. Turn barcode values + OCR text into one decision per photo.
 
-Run with:  python validate.py   (from the repo folder, with the venv active)
+Run with:  python -m label_reader.validate   (from the repo folder, with the venv active)
 
 For each photo:
   1. barcode   Stage 3 reader -> pull serial-shaped values out of what it decoded
@@ -36,9 +36,9 @@ from collections import Counter
 import cv2
 import pandas as pd
 
-from baseline import load_truth, normalize, out_dir_for, valid_ean13
-from barcode_reader import read_barcode
-from ocr_reader import read_ocr
+from label_reader.baseline import load_truth, normalize, out_dir_for, valid_ean13
+from label_reader.barcode_reader import read_barcode
+from label_reader.ocr_reader import read_ocr
 
 PHOTOS_DIR = "photos"
 

@@ -1,6 +1,6 @@
 """Stage 2: baseline. Barcode decode + OCR on the full, uncropped photos.
 
-Run with:  python baseline.py   (from the repo folder, with the venv active)
+Run with:  python -m label_reader.baseline   (from the repo folder, with the venv active)
 
 No cropping, no preprocessing beyond grayscale, no tuning. The point is to
 measure how far the libraries get on their own, so later stages have a number
@@ -17,7 +17,7 @@ import sys
 import re
 import time
 
-import native_libs  # noqa: I001  (must come before pyzbar: lets it find ZBar on macOS)
+from label_reader import native_libs  # noqa: I001  (must come before pyzbar: lets it find ZBar on macOS)
 import cv2
 import numpy as np
 import pandas as pd
@@ -40,7 +40,7 @@ def load_truth(folder: str | None = None) -> pd.DataFrame:
     """The true values: truth.csv for our photos, or <folder>/truth.csv for another dataset.
 
     Every script takes that folder as an optional argument, e.g.
-    `python evaluate.py photos/ean_dataset`. A dataset's truth.csv may have a
+    `python -m label_reader.evaluate photos/ean_dataset`. A dataset's truth.csv may have a
     `checked` column (values typed by hand and still being checked): only rows
     marked "yes" are used, so unverified values never count.
 

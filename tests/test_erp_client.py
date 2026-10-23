@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from conftest import CLIENT_ID, CLIENT_SECRET, FAKE_SERIAL_1, JOB, free_port
-from erp_client import ErpClient, ErpRejected, ErpUnavailable
+from label_reader.erp.erp_client import ErpClient, ErpRejected, ErpUnavailable
 
 
 class Recorder:

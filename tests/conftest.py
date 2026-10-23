@@ -13,7 +13,7 @@ import httpx
 import pytest
 import uvicorn
 
-import mock_erp
+from label_reader.erp import mock_erp
 
 CLIENT_ID = "test-client"
 CLIENT_SECRET = "test-secret"

@@ -2,8 +2,8 @@
 
 Run with:  streamlit run app.py   (from the repo folder, with the venv active)
 It opens in the browser at http://localhost:8501. For the ERP parts, also run
-the mock ERP in a second terminal:  python mock_erp.py serve
-(after seeding a job once:  python mock_erp.py seed --job JOB-0001 --from truth.csv)
+the mock ERP in a second terminal:  python -m label_reader.erp.mock_erp serve
+(after seeding a job once:  python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv)
 
 Streamlit re-runs this whole file from top to bottom every time someone clicks
 or uploads something, and draws whatever the code says to draw. So there are no
@@ -25,12 +25,12 @@ import cv2
 import numpy as np
 import streamlit as st
 
-import register as reg
-from erp_client import ErpError
-from ocr_reader import read_ocr
-from barcode_reader import read_barcode
-from validate import barcode_candidates, decide, looks_like_serial, ocr_candidates
-from baseline import valid_ean13
+from label_reader import register as reg
+from label_reader.erp.erp_client import ErpError
+from label_reader.ocr_reader import read_ocr
+from label_reader.barcode_reader import read_barcode
+from label_reader.validate import barcode_candidates, decide, looks_like_serial, ocr_candidates
+from label_reader.baseline import valid_ean13
 
 
 # ---------- the label reader ----------
@@ -354,11 +354,11 @@ def assets_screen() -> None:
 def erp_screen(job_id: str | None, online: bool) -> None:
     st.header("ERP")
     if not online:
-        st.error("The ERP isn't reachable. Start it in a second terminal:  `python mock_erp.py serve`")
+        st.error("The ERP isn't reachable. Start it in a second terminal:  `python -m label_reader.erp.mock_erp serve`")
         return
     if job_id is None:
         st.warning("No job on the ERP yet. Create one:  "
-                   "`python mock_erp.py seed --job JOB-0001 --from truth.csv`")
+                   "`python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv`")
         return
 
     try:

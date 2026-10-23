@@ -8,8 +8,8 @@ import cv2
 import numpy as np
 import zxingcpp
 
-import barcode_reader
-from barcode_reader import read_barcode
+from label_reader import barcode_reader
+from label_reader.barcode_reader import read_barcode
 
 
 def check_digit(digits: str) -> str:

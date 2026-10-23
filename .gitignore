@@ -13,10 +13,14 @@ photos_original/
 truth.csv
 .DS_Store
 
-.serena/
-
 *.log
 # Asset register (app.py): database and scanned photos hold real serials
 data/
 
-tests/.pytest_cache/
+.pytest_cache/
+*.egg-info/
+.serena/
+# Barcode detector experiment (branch barcode-detection): weights are large and
+# the training data's licence is unknown, so they stay private
+trained_model/
+models/

@@ -1,9 +1,9 @@
 """Stage 9: post validated results to the ERP, and queue everything else for review.
 
-Run with:  python post_to_erp.py [--job JOB-0001]          (after python validate.py)
-      or:  python post_to_erp.py photos/ean_dataset --job JOB-0002
+Run with:  python -m label_reader.erp.post_to_erp [--job JOB-0001]          (after python -m label_reader.validate)
+      or:  python -m label_reader.erp.post_to_erp photos/ean_dataset --job JOB-0002
 
-The mock ERP must be running (python mock_erp.py serve). Connection settings
+The mock ERP must be running (python -m label_reader.erp.mock_erp serve). Connection settings
 come from ERP_URL, ERP_CLIENT_ID and ERP_CLIENT_SECRET (see erp_client.py).
 
 For every photo in validation.csv, match its serial against the job's manifest
@@ -45,7 +45,7 @@ from typing import NamedTuple
 
 import pandas as pd
 
-from erp_client import ErpClient, ErpError, ErpRejected, ErpUnavailable
+from label_reader.erp.erp_client import ErpClient, ErpError, ErpRejected, ErpUnavailable
 
 # Same as validate.CONFUSABLE: characters OCR mixes up in label fonts. Copied
 # because importing validate.py starts the OCR engine (~0.7 s).

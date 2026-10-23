@@ -1,8 +1,8 @@
 """Stage 4: find and crop the label(s) in each photo with classical OpenCV.
 
-Run with:  python label_finder.py   (from the repo folder, with the venv active)
+Run with:  python -m label_reader.label_finder   (from the repo folder, with the venv active)
 Or on another dataset folder (its own photos + truth.csv):
-           python label_finder.py photos/ean_dataset
+           python -m label_reader.label_finder photos/ean_dataset
 
 Why not just threshold for a bright rectangle? Because our labels come in both
 polarities: white label on a black mouse (ASUS), and dark label with white text
@@ -52,8 +52,8 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from barcode_reader import read_barcode
-from baseline import found, load_truth, out_dir_for
+from label_reader.barcode_reader import read_barcode
+from label_reader.baseline import found, load_truth, out_dir_for
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "labels")

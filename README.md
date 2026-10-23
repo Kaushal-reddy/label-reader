@@ -226,10 +226,12 @@ native programs, Tesseract 5 and ZBar, which pip can't install.
 3. **Check everything works** (all checks should say `[OK]`):
 
    ```bash
-   python check_setup.py
+   python -m scripts.check_setup
    ```
 
-All commands below assume the venv is active and you're in the repo folder.
+All commands below assume the venv is active and you're in the repo folder
+(the stages run as modules, `python -m label_reader.<stage>`, so they find each
+other without installing anything; `pip install -e .` also works).
 
 ## Data
 
@@ -267,19 +269,20 @@ With `photos/` and `truth.csv` in place:
 
 | Command | What it does | Main output |
 |---|---|---|
-| `python shrink_photos.py` | Shrinks photos larger than 4032 px to 4032 px (originals moved to `photos_original/`). Run once after adding photos | `photos/` |
-| `python prepare_ean_dataset.py` | Builds `photos/ean_dataset/` (410 single-barcode images) from the downloaded `photos/Barcode_Dataset`, runs the variant matrix, and writes a pre-filled `truth.csv` + review sheets to check | `photos/ean_dataset/`, `output/ean_dataset/` |
-| `python validate.py` | **The pipeline**: reads every photo and decides | `output/results.csv`, `output/needs_review.csv` |
-| `python evaluate.py` | Measures every stage against `truth.csv`, and times it | `output/evaluation/summary.md` |
-| `python analyze.py` | Figures, confusion matrices and tables from `evaluate.py`'s results (see below) | `output/analysis/report.md` |
-| `python baseline.py` | Stage 2: untuned barcode + OCR on raw photos | `output/baseline/` |
-| `python barcode_reader.py` | Stage 3: barcode variant matrix (ZBar) | `output/barcode/variant_matrix.csv` |
-| `python zxing_experiment.py` | Stage 3: zxing-cpp vs ZBar, 6 decoder policies through Stage 6 (run `validate.py` first; reuses its OCR) | `output/zxing/summary.md` |
-| `python label_finder.py` | Stage 4: label boxes, crops and debug images | `output/labels/boxes/`, `crops/`, `debug/` |
-| `python ocr_reader.py` | Stage 5: OCR method comparison | `output/ocr/variant_matrix.csv`, `text/`, `lines/` |
-| `python mock_erp.py seed --job JOB-0001 --from truth.csv` | Creates (or resets) a job in the mock ERP with one manifest line per item; `--leave-out Mouse_2` drops an item | `output/erp/erp.sqlite` |
-| `python mock_erp.py serve` | Runs the mock ERP on `localhost:8000` (API docs at `/docs`); failure flags below | – |
-| `python post_to_erp.py --job JOB-0001` | Stage 9: posts accepted, matched photos to the ERP and queues the rest for review | `output/erp/posted.csv`, `review_queue.csv` |
+| `python -m scripts.shrink_photos` | Shrinks photos larger than 4032 px to 4032 px (originals moved to `photos_original/`). Run once after adding photos | `photos/` |
+| `python -m scripts.prepare_ean_dataset` | Builds `photos/ean_dataset/` (410 single-barcode images) from the downloaded `photos/Barcode_Dataset`, runs the variant matrix, and writes a pre-filled `truth.csv` + review sheets to check | `photos/ean_dataset/`, `output/ean_dataset/` |
+| `python -m label_reader.validate` | **The pipeline**: reads every photo and decides | `output/results.csv`, `output/needs_review.csv` |
+| `python -m label_reader.evaluate` | Measures every stage against `truth.csv`, and times it | `output/evaluation/summary.md` |
+| `python -m label_reader.analyze` | Figures, confusion matrices and tables from `evaluate.py`'s results (see below) | `output/analysis/report.md` |
+| `python -m label_reader.baseline` | Stage 2: untuned barcode + OCR on raw photos | `output/baseline/` |
+| `python -m label_reader.barcode_reader` | Stage 3: barcode variant matrix (ZBar) | `output/barcode/variant_matrix.csv` |
+| `python -m scripts.zxing_experiment` | Stage 3: zxing-cpp vs ZBar, 6 decoder policies through Stage 6 (run `validate.py` first; reuses its OCR) | `output/zxing/summary.md` |
+| `python -m label_reader.label_finder` | Stage 4: label boxes, crops and debug images | `output/labels/boxes/`, `crops/`, `debug/` |
+| `python -m label_reader.ocr_reader` | Stage 5: OCR method comparison | `output/ocr/variant_matrix.csv`, `text/`, `lines/` |
+| `python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv` | Creates (or resets) a job in the mock ERP with one manifest line per item; `--leave-out Mouse_2` drops an item | `output/erp/erp.sqlite` |
+| `python -m label_reader.erp.mock_erp serve` | Runs the mock ERP on `localhost:8000` (API docs at `/docs`); failure flags below | – |
+| `python -m label_reader.erp.post_to_erp --job JOB-0001` | Stage 9: posts accepted, matched photos to the ERP and queues the rest for review | `output/erp/posted.csv`, `review_queue.csv` |
+| `streamlit run app.py` | The asset register in the browser: scan a photo, review uncertain reads, search the register, send items to the ERP ([docs/asset_register.md](docs/asset_register.md)) | `data/assets.db` |
 | `python -m pytest tests` | Tests for the barcode reader (synthetic barcodes), the mock ERP, the client, Stage 9 and the asset register (fake serials only) | – |
 
 Every stage saves its intermediate images to `output/` so failures can be inspected by eye.
@@ -290,13 +293,13 @@ and `truth.csv`. Results go to `output/<folder name>/` instead, and `truth.csv`
 rows whose `checked` column isn't `yes` are skipped. For the EAN set:
 
 ```bash
-python baseline.py photos/ean_dataset
-python barcode_reader.py photos/ean_dataset   # also prints what Stage 6 accepts on the barcode alone
-python label_finder.py photos/ean_dataset
-python ocr_reader.py photos/ean_dataset
-python validate.py photos/ean_dataset
-python evaluate.py photos/ean_dataset
-python analyze.py photos/ean_dataset          # after evaluate.py
+python -m label_reader.baseline photos/ean_dataset
+python -m label_reader.barcode_reader photos/ean_dataset   # also prints what Stage 6 accepts on the barcode alone
+python -m label_reader.label_finder photos/ean_dataset
+python -m label_reader.ocr_reader photos/ean_dataset
+python -m label_reader.validate photos/ean_dataset
+python -m label_reader.evaluate photos/ean_dataset
+python -m label_reader.analyze photos/ean_dataset          # after evaluate.py
 ```
 
 To keep the output manageable, a dataset run skips the per-variant and per-step
@@ -342,7 +345,7 @@ validation.csv ─► post_to_erp.py ─┬─► outbox ─► erp_client.py �
   `ERP_CLIENT_SECRET`). `POST /api/v1/receipts` needs an `Idempotency-Key`: the
   same key and body again returns the saved receipt (200), the same key with a
   different body is refused (422), and receiving more than the line's quantity is
-  refused (409). The schema is in `docs/erp_openapi.json` (`python mock_erp.py openapi`).
+  refused (409). The schema is in `docs/erp_openapi.json` (`python -m label_reader.erp.mock_erp openapi`).
 - **Failure injection**, to test error recovery: `--fail-rate` (random 503),
   `--lost-rate` (receipt saved, but the reply is a 500), `--slow-rate` /
   `--slow-seconds`, `--rate-limit` (429 with `Retry-After`), `--token-ttl`, `--seed`.
@@ -365,9 +368,9 @@ validation.csv ─► post_to_erp.py ─┬─► outbox ─► erp_client.py �
 30% of requests with a 503 and losing the reply on 30% of new receipts:
 
 ```bash
-python mock_erp.py seed --job JOB-0001 --from truth.csv --leave-out Mouse_2
-python mock_erp.py serve --fail-rate 0.3 --lost-rate 0.3 --rate-limit 5 --seed 7
-python post_to_erp.py --job JOB-0001        # in a second terminal
+python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv --leave-out Mouse_2
+python -m label_reader.erp.mock_erp serve --fail-rate 0.3 --lost-rate 0.3 --rate-limit 5 --seed 7
+python -m label_reader.erp.post_to_erp --job JOB-0001        # in a second terminal
 ```
 
 10 photos were posted and 16 went to review (8 not confident, 6 already received,
@@ -379,7 +382,7 @@ one seed; the ERP tests (41 of the tests in `python -m pytest tests`) repeat the
 fake serials, including every line received exactly once under 50% 503s plus 50%
 lost responses, and pending posts sent after an outage.
 
-`python mock_erp.py serve --host 0.0.0.0` makes the mock reachable from other
+`python -m label_reader.erp.mock_erp serve --host 0.0.0.0` makes the mock reachable from other
 computers on your network. Its database holds real serials when seeded from
 `truth.csv`, so only do that on a network you trust.
 
@@ -408,25 +411,35 @@ computers on your network. Its database holds real serials when seeded from
 ## Project layout
 
 ```
-check_setup.py     Stage 0  checks OpenCV, pyzbar, zxing-cpp, Tesseract (both paths), pandas, matplotlib
-native_libs.py     setup    finds Tesseract and ZBar on Windows / macOS / Linux
-baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize(), found(), valid_ean13(), load_truth()
-barcode_reader.py  Stage 3  read_barcode(): zxing-cpp, then ZBar with retries + barcode-type filter
-zxing_experiment.py Stage 3  zxing-cpp vs ZBar: decoder policies measured through Stage 6
-label_finder.py    Stage 4  find_label_boxes(), crop_rotated()
-ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line + barcode-digit OCR
-tess_direct.py     Stage 5  TessEngine: Tesseract's C API via ctypes (no process per call)
-validate.py        Stage 6  the pipeline: candidates, pattern check, agreement, CSVs
-evaluate.py        Stage 7  accuracy per stage + timing → output/evaluation/
-analyze.py         Stage 8  figures, confusion matrices, tables → output/analysis/
-shrink_photos.py   utility  shrinks photos over 4032 px; originals → photos_original/
-prepare_ean_dataset.py utility  downloaded barcode set → photos/ean_dataset/ + review sheets
-mock_erp.py        Stage 9  mock ERP server (generic stand-in): seed / serve / openapi
-erp_client.py      Stage 9  ErpClient: tokens, retries with backoff, idempotent receipts
-post_to_erp.py     Stage 9  match results to the manifest, outbox, post + review queue
-tests/             pytest tests: barcode reader, Stage 9, asset register (fake serials only)
-docs/erp_openapi.json      the mock ERP's API schema
-photos/            input photos (not committed; see Data)
-truth.csv          true serials (not committed); format in truth.example.csv
-output/            everything generated (git-ignored, re-created by the scripts)
+app.py                     Streamlit asset register: Scan, Review, Assets, ERP screens
+label_reader/              the pipeline (each stage runs with python -m label_reader.<stage>)
+  native_libs.py   setup    finds Tesseract and ZBar on Windows / macOS / Linux
+  baseline.py      Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize(), found(), valid_ean13(), load_truth()
+  barcode_reader.py Stage 3 read_barcode(): zxing-cpp, then ZBar with retries + barcode-type filter
+  label_finder.py  Stage 4  find_label_boxes(), crop_rotated()
+  ocr_reader.py    Stage 5  read_ocr(): whole-crop + line-by-line + barcode-digit OCR
+  tess_direct.py   Stage 5  TessEngine: Tesseract's C API via ctypes (no process per call)
+  validate.py      Stage 6  the pipeline: candidates, pattern check, agreement, CSVs
+  evaluate.py      Stage 7  accuracy per stage + timing → output/evaluation/
+  analyze.py       Stage 8  figures, confusion matrices, tables → output/analysis/
+  register.py      app      the asset register's storage (SQLite) and ERP link, no Streamlit
+  erp/             Stage 9
+    mock_erp.py             mock ERP server (generic stand-in): seed / serve / openapi
+    erp_client.py           ErpClient: tokens, retries with backoff, idempotent receipts
+    post_to_erp.py          match results to the manifest, outbox, post + review queue
+scripts/                   setup check, dataset tools, experiments (python -m scripts.<name>)
+  check_setup.py   Stage 0  checks OpenCV, pyzbar, zxing-cpp, Tesseract (both paths), pandas, matplotlib
+  shrink_photos.py          shrinks photos over 4032 px; originals → photos_original/
+  prepare_ean_dataset.py    downloaded barcode set → photos/ean_dataset/ + review sheets
+  zxing_experiment.py       zxing-cpp vs ZBar: decoder policies measured through Stage 6
+tests/                     pytest tests: barcode reader, Stage 9, asset register (fake serials only)
+docs/
+  asset_register.md         how app.py uses the pipeline, its database and the ERP
+  erp_openapi.json          the mock ERP's API schema
+pyproject.toml             package metadata and pytest settings
+requirements.txt           exact versions (requirements-erp.txt: the ERP and test extras)
+photos/                    input photos (not committed; see Data)
+truth.csv                  true serials (not committed); format in truth.example.csv
+output/                    everything generated (git-ignored, re-created by the scripts)
+data/                      the asset register's database and scans (git-ignored)
 ```

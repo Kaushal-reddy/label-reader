@@ -3,8 +3,8 @@
 import httpx
 
 from conftest import CLIENT_ID, CLIENT_SECRET, FAKE_EAN, FAKE_SERIAL_1, FAKE_SERIAL_2, JOB, free_port
-from erp_client import ErpClient
-from post_to_erp import Outbox, match_row, plan_posts, run, send_pending
+from label_reader.erp.erp_client import ErpClient
+from label_reader.erp.post_to_erp import Outbox, match_row, plan_posts, run, send_pending
 
 # ------------------------------------------------------------ matching (no server)
 

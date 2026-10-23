@@ -1,14 +1,14 @@
 """Stage 0: confirm that OpenCV, pyzbar (ZBar), zxing-cpp, pytesseract (Tesseract), pandas
 and matplotlib work.
 
-Run with:  python check_setup.py   (from the repo folder, with the venv active)
+Run with:  python -m scripts.check_setup   (from the repo folder, with the venv active)
 
 Each check runs on its own, so one failure doesn't hide the others.
 The images used here are made in memory just to prove the libraries run.
 They are NOT test data and are never used for accuracy numbers.
 """
 
-import native_libs  # before pyzbar: lets it find ZBar on macOS
+from label_reader import native_libs  # before pyzbar: lets it find ZBar on macOS
 
 
 def check_opencv() -> str:
@@ -74,7 +74,7 @@ def check_tess_direct() -> str:
     import cv2
     import numpy as np
 
-    from tess_direct import find_library, load_engine
+    from label_reader.tess_direct import find_library, load_engine
 
     engine = load_engine()
     assert engine is not None, "library not loaded; OCR will fall back to pytesseract (slower)"

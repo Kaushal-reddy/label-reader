@@ -1,7 +1,7 @@
 """Experiment: does a second barcode decoder (zxing-cpp) help ZBar?
 
-Run with:  python zxing_experiment.py                    (our 26 photos)
-      or:  python zxing_experiment.py photos/ean_dataset (the 403-photo EAN set)
+Run with:  python -m scripts.zxing_experiment                    (our 26 photos)
+      or:  python -m scripts.zxing_experiment photos/ean_dataset (the 403-photo EAN set)
 Needs validate.py to have been run on the same folder first: its OCR candidates
 (validation.csv) are reused, so only the barcode step is re-run.
 
@@ -39,9 +39,9 @@ import time
 import cv2
 import pandas as pd
 
-from baseline import load_truth, out_dir_for
-from barcode_reader import CONFIRM_VARIANTS, VARIANTS, is_product_code, zbar_read, zxing_decode
-from validate import barcode_candidates, decide
+from label_reader.baseline import load_truth, out_dir_for
+from label_reader.barcode_reader import CONFIRM_VARIANTS, VARIANTS, is_product_code, zbar_read, zxing_decode
+from label_reader.validate import barcode_candidates, decide
 
 PHOTOS_DIR = "photos"
 POLICIES = ["zbar", "zxing", "fallback", "zxing_first", "either", "both"]

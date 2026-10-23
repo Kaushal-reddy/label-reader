@@ -20,9 +20,9 @@ from datetime import datetime
 import httpx
 import pandas as pd
 
-from baseline import valid_ean13
-from erp_client import ErpClient, ErpRejected, ErpUnavailable
-from post_to_erp import Match, Outbox, job_key_for, match_row, send_pending
+from label_reader.baseline import valid_ean13
+from label_reader.erp.erp_client import ErpClient, ErpRejected, ErpUnavailable
+from label_reader.erp.post_to_erp import Match, Outbox, job_key_for, match_row, send_pending
 
 # ASSET_DATA_DIR lets a test run use a throwaway folder instead of the real register.
 DATA_DIR = os.environ.get("ASSET_DATA_DIR", "data")

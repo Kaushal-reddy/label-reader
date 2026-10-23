@@ -1,6 +1,6 @@
 """Shrink oversized photos in photos/ so every stage runs faster.
 
-Run with:  python shrink_photos.py   (from the repo folder, with the venv active)
+Run with:  python -m scripts.shrink_photos   (from the repo folder, with the venv active)
 
 Every step (ZBar, OpenCV, Tesseract) works on decoded pixels, so speed depends
 on the number of pixels, not the file size. Measured once on our 26 photos with

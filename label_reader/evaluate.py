@@ -1,6 +1,6 @@
 """Stage 7: measure accuracy per stage against truth.csv, and time per item.
 
-Run with:  python evaluate.py   (from the repo folder, with the venv active)
+Run with:  python -m label_reader.evaluate   (from the repo folder, with the venv active)
 
 One pass over all photos that runs every stage and measures it the same way,
 so the numbers can be compared side by side. Each stage's own script printed
@@ -36,12 +36,12 @@ import numpy as np
 import pandas as pd
 import pytesseract
 
-import baseline
-from baseline import found, load_truth, out_dir_for
-from barcode_reader import read_barcode
-from label_finder import crop_rotated, find_label_boxes
-from ocr_reader import closest_match, get_crops, read_barcode_digits, read_lines, read_whole_crop
-from validate import barcode_candidates, decide, ocr_candidates
+from label_reader import baseline
+from label_reader.baseline import found, load_truth, out_dir_for
+from label_reader.barcode_reader import read_barcode
+from label_reader.label_finder import crop_rotated, find_label_boxes
+from label_reader.ocr_reader import closest_match, get_crops, read_barcode_digits, read_lines, read_whole_crop
+from label_reader.validate import barcode_candidates, decide, ocr_candidates
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "evaluation")

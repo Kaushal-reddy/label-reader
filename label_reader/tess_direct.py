@@ -25,7 +25,7 @@ import sys
 
 import numpy as np
 
-from native_libs import WINDOWS_TESSERACT_DIR, find_tesseract
+from label_reader.native_libs import WINDOWS_TESSERACT_DIR, find_tesseract
 
 WINDOWS_DLL_NAME = "libtesseract-5.dll"
 

@@ -1,9 +1,9 @@
 """Stage 8: analysis. Turn the Stage 7 measurements into printed tables,
 confusion matrices and figures.
 
-Run with:  python analyze.py   (after evaluate.py; from the repo folder, with the venv active)
-Or for another dataset folder, after `python evaluate.py photos/ean_dataset`:
-           python analyze.py photos/ean_dataset   (reads and writes output/ean_dataset/...)
+Run with:  python -m label_reader.analyze   (after evaluate.py; from the repo folder, with the venv active)
+Or for another dataset folder, after `python -m label_reader.evaluate photos/ean_dataset`:
+           python -m label_reader.analyze photos/ean_dataset   (reads and writes output/ean_dataset/...)
 
 evaluate.py does the slow part (every stage on every photo, timed 3 times).
 This script only reads its output/evaluation/per_photo.csv, so it runs in a
@@ -200,7 +200,7 @@ class Report:
     """Collects tables and figures; prints tables as it goes; writes report.md at the end."""
 
     def __init__(self, n: int) -> None:
-        self.md = [f"# Analysis\n\nFrom `{EVAL_CSV}` ({n} photos). Re-create with `python analyze.py`.\n"]
+        self.md = [f"# Analysis\n\nFrom `{EVAL_CSV}` ({n} photos). Re-create with `python -m label_reader.analyze`.\n"]
 
     def section(self, title: str, note: str = "") -> None:
         print(f"\n=== {title} ===")

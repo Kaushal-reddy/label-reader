@@ -1,6 +1,6 @@
 """Stage 3: barcode reading, with retries on modified images when the plain decode fails.
 
-Run with:  python barcode_reader.py   (from the repo folder, with the venv active)
+Run with:  python -m label_reader.barcode_reader   (from the repo folder, with the venv active)
 
 Idea: if the plain photo fails, try other versions of it - bigger, sharper,
 rotated - and stop at the first one that decodes. Barcodes carry a checksum, so
@@ -30,7 +30,7 @@ so you can see exactly which change rescued which photo:
                                       (shrunk to PREVIEW_MAX_SIDE; ZBar got full size)
 
 Another dataset folder (its own photos + truth.csv) can be given instead:
-  python barcode_reader.py photos/ean_dataset
+  python -m label_reader.barcode_reader photos/ean_dataset
 Results then go to output/<folder name>/barcode/ (without the variant images,
 which would be thousands of files), and truth.csv rows with a `checked`
 column that isn't "yes" are skipped, so unverified values never count.
@@ -41,7 +41,7 @@ import sys
 import time
 from typing import NamedTuple
 
-import native_libs  # noqa: F401, I001  (must come before pyzbar: lets it find ZBar on macOS)
+from label_reader import native_libs  # noqa: F401, I001  (must come before pyzbar: lets it find ZBar on macOS)
 import cv2
 import numpy as np
 import pandas as pd
@@ -49,7 +49,7 @@ from pyzbar import pyzbar
 from pyzbar.pyzbar import ZBarSymbol
 import zxingcpp
 
-from baseline import found, load_truth, out_dir_for  # found: same lenient check as Stage 2
+from label_reader.baseline import found, load_truth, out_dir_for  # found: same lenient check as Stage 2
 
 PHOTOS_DIR = "photos"
 OUT_DIR = os.path.join("output", "barcode")
@@ -378,7 +378,7 @@ def main(folder: str | None = None) -> None:
         # What Stage 6 would do with each read on the barcode alone (these sets are
         # product barcodes, and the product rule doesn't use OCR). Imported here
         # because validate.py imports this file.
-        from validate import barcode_candidates, decide
+        from label_reader.validate import barcode_candidates, decide
         decisions = [decide(barcode_candidates(r.values), [], [], r.conflicts, r.agreeing)
                      for r in reads]
         results["decision"] = [d[0] for d in decisions]
