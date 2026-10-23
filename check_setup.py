@@ -1,4 +1,4 @@
-"""Stage 0: confirm that OpenCV, pyzbar (ZBar), pytesseract (Tesseract), pandas
+"""Stage 0: confirm that OpenCV, pyzbar (ZBar), zxing-cpp, pytesseract (Tesseract), pandas
 and matplotlib work.
 
 Run with:  python check_setup.py   (from the repo folder, with the venv active)
@@ -33,6 +33,18 @@ def check_pyzbar() -> str:
     # Getting [] back (instead of a crash) shows the decoder really ran.
     assert results == [], f"expected no barcodes, got {results}"
     return "ZBar library loaded, decoded a blank image -> []"
+
+
+def check_zxing() -> str:
+    # zxing-cpp ships its decoder inside the pip package, so unlike ZBar and
+    # Tesseract there's nothing else to install.
+    import numpy as np
+    import zxingcpp
+
+    blank = np.full((100, 100), 255, dtype=np.uint8)
+    results = zxingcpp.read_barcodes(blank)
+    assert results == [], f"expected no barcodes, got {results}"
+    return "zxing-cpp loaded, decoded a blank image -> []"
 
 
 def check_tesseract() -> str:
@@ -103,7 +115,7 @@ def check_matplotlib() -> str:
 
 
 if __name__ == "__main__":
-    checks = [("OpenCV", check_opencv), ("pyzbar", check_pyzbar),
+    checks = [("OpenCV", check_opencv), ("pyzbar", check_pyzbar), ("zxing-cpp", check_zxing),
               ("pytesseract", check_tesseract), ("tess_direct", check_tess_direct),
               ("pandas", check_pandas), ("matplotlib", check_matplotlib)]
     failed = 0

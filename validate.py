@@ -14,7 +14,7 @@ For each photo:
                characters OCR is known to confuse (O/0, A/4, ...). Then output
                the BARCODE's characters: barcodes carry a checksum, OCR doesn't.
                Or, for a retail product barcode (EAN-13), ACCEPT the barcode
-               alone if its check digit is valid, ZBar read it only one way,
+               alone if its check digit is valid, it was read only one way,
                and at least two image variants read the same number.
                Anything else -> NEEDS REVIEW, with the reason and best guess.
 
@@ -134,8 +134,8 @@ def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str],
            ) -> tuple[str, str, str, str]:
     """Return (status, serial, source, reason). Uses only what was read from the photo.
 
-    conflicts = other values ZBar read from the same barcode(s) and rejected
-    (barcode_reader.resolve); any conflict blocks accepting a barcode on its own.
+    conflicts = other values a decoder read from the same barcode(s) and rejected
+    (barcode_reader.resolve / zxing_read); any conflict blocks accepting a barcode on its own.
     agreeing = value -> how many image variants read it (barcode_reader.confirm);
     a product barcode needs MIN_AGREEING_VARIANTS to be accepted on its own.
     """
@@ -152,7 +152,7 @@ def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str],
     #    digits printed small next to the bars (ocr_reader.read_barcode_digits),
     #    and on curved or glary packaging OCR still misses those. So the barcode
     #    may stand alone, which is only safe when the
-    #    check digit is valid, ZBar read it one way only (on a curved can it once
+    #    check digit is valid, it was read one way only (on a curved can ZBar once
     #    read a second, wrong number that also had a valid check digit), AND more
     #    than one image variant read it (single wrong reads pass the other two checks).
     products = list(dict.fromkeys(b for b in bc if valid_ean13(b)))
@@ -161,7 +161,7 @@ def decide(bc: list[str], ocr_lab: list[str], ocr_unlab: list[str],
                 f"several product barcodes read: {', '.join(products)}")
     if products and conflicts:
         return ("needs_review", products[0], "barcode",
-                f"product barcode {products[0]}, but ZBar also read {', '.join(conflicts)} from it")
+                f"product barcode {products[0]}, but it was also read as {', '.join(conflicts)}")
     if products and agreeing.get(products[0], 1) < MIN_AGREEING_VARIANTS:
         return ("needs_review", products[0], "barcode",
                 f"product barcode {products[0]} read by only {agreeing.get(products[0], 1)} "
