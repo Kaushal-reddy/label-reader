@@ -165,7 +165,8 @@ def main(folder: str | None = None) -> None:
     time_table = [(k.replace("t_", ""), f"{df[k].mean():.2f}", f"{df[k].max():.2f}")
                   for k in ("t_label_find", "t_barcode", "t_ocr", "t_decide", "t_total")]
 
-    md = [f"Measured on {n} photos ({os.path.join(folder, 'truth.csv') if folder else 'truth.csv'}). Times: median of {RUNS} runs per photo.\n",
+    truth_path = os.path.join(folder, 'truth.csv') if folder else 'truth.csv'
+    md = [f"Measured on {n} photos ({truth_path}). Times: median of {RUNS} runs per photo.\n",
           "### Accuracy per stage\n", "| Stage | Measure | Result |", "|---|---|---|"]
     md += [f"| {s} | {m} | {r} |" for s, m, r in stage_table]
     md += ["\n### Final decisions (Stage 6: accept only if barcode and OCR agree, "

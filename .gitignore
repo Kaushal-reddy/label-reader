@@ -24,3 +24,7 @@ data/
 # the training data's licence is unknown, so they stay private
 trained_model/
 models/
+# Test and coverage reports (CI uploads these as artifacts)
+.coverage
+coverage.xml
+junit.xml

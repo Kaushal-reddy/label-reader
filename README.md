@@ -1,5 +1,7 @@
 # Label Reader
 
+[![CI](https://github.com/Kaushal-reddy/label-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/Kaushal-reddy/label-reader/actions/workflows/ci.yml)
+
 Reads serial numbers from phone photos of IT equipment labels (laptops, mice),
 and product barcode numbers (EAN-13) from retail packaging, using classical computer vision only: **OpenCV**, **zxing-cpp** and **ZBar** (barcodes, via pyzbar)
 and **Tesseract** (OCR, via pytesseract). No deep-learning models.
@@ -282,8 +284,10 @@ With `photos/` and `truth.csv` in place:
 | `python -m label_reader.erp.mock_erp seed --job JOB-0001 --from truth.csv` | Creates (or resets) a job in the mock ERP with one manifest line per item; `--leave-out Mouse_2` drops an item | `output/erp/erp.sqlite` |
 | `python -m label_reader.erp.mock_erp serve` | Runs the mock ERP on `localhost:8000` (API docs at `/docs`); failure flags below | – |
 | `python -m label_reader.erp.post_to_erp --job JOB-0001` | Stage 9: posts accepted, matched photos to the ERP and queues the rest for review | `output/erp/posted.csv`, `review_queue.csv` |
-| `streamlit run app.py` | The asset register in the browser: scan a photo, review uncertain reads, search the register, send items to the ERP ([docs/asset_register.md](docs/asset_register.md)) | `data/assets.db` |
-| `python -m pytest tests` | Tests for the barcode reader (synthetic barcodes), the mock ERP, the client, Stage 9 and the asset register (fake serials only) | – |
+| `streamlit run app.py` | (needs `requirements-erp.txt` too) The asset register in the browser: scan a photo, review uncertain reads, search the register, send items to the ERP ([docs/asset_register.md](docs/asset_register.md)) | `data/assets.db` |
+| `python -m pytest tests` | 63 tests: the barcode reader (synthetic barcodes), the whole pipeline on synthetic label photos, the mock ERP, the client, Stage 9, the asset register and the Streamlit app's screens (fake serials only) | – |
+| `python -m scripts.make_synthetic_dataset` | Draws 14 synthetic label photos with fake serials (serial labels, product barcodes, and labels whose printed serial disagrees with the barcode), so every stage can run without the private photos | `photos/synthetic/` |
+| `python -m scripts.erp_e2e` | Stage 9 end to end with real processes: the mock ERP failing on purpose, `post_to_erp` until nothing is pending, then checks every accepted photo was received exactly once (run `validate.py photos/synthetic` first) | – |
 
 Every stage saves its intermediate images to `output/` so failures can be inspected by eye.
 
@@ -386,6 +390,49 @@ lost responses, and pending posts sent after an outage.
 computers on your network. Its database holds real serials when seeded from
 `truth.csv`, so only do that on a network you trust.
 
+## Docker
+
+The asset register and the mock ERP run together with one command, with
+Tesseract and ZBar already installed in the image:
+
+```bash
+docker compose up --build         # then open http://localhost:8501
+```
+
+The ERP starts with a demo job (`JOB-DEMO`) whose manifest matches the synthetic
+photos built into the app image. Copy them out with
+`docker compose cp app:/app/demo ./demo` and upload them on the Scan screen. The
+images hold no real photos or serials: `.dockerignore` only lets the code in,
+and CI checks the built images. The pipeline also runs inside the image:
+`docker compose run --rm app python -m label_reader.validate demo`.
+
+Released images are on GitHub's container registry (`ghcr.io/kaushal-reddy/label-reader-app`
+and `label-reader-mock-erp`, for amd64 and arm64); `IMAGE_PREFIX=ghcr.io/kaushal-reddy docker compose pull`
+uses them instead of building.
+
+## CI/CD
+
+GitHub Actions ([`.github/workflows/`](.github/workflows/)) runs on every push to `main` and every pull request:
+
+| Job | What it checks |
+|---|---|
+| Lint, privacy guard, API schema | `ruff`; that no photos, `truth.csv`, outputs, databases or model weights are tracked; that `docs/erp_openapi.json` matches the code |
+| Tests | `check_setup` and all 63 tests on Ubuntu (Python 3.12, 3.13, 3.14), macOS and Windows, each with its own Tesseract and ZBar install. Coverage in the job summary |
+| Pipeline + ERP end to end | Every stage's command (`baseline` to `analyze`, and the decoder experiment) on the synthetic photos, then `scripts/erp_e2e.py` against a mock ERP failing 30% of requests. The evaluation summary goes in the job summary and the outputs are kept as an artifact |
+| Package | Builds the wheel and sdist and installs the wheel in a clean venv |
+| Docker | Builds both images, checks they contain no private files, runs `check_setup` and the pipeline inside the app image, then `docker compose up` and checks both services answer and the demo job exists |
+
+The synthetic photos can't show real-world accuracy (that's what the private
+photos are for), but they test the properties that matter on every OS: nothing
+is accepted wrongly, a label whose printed serial disagrees with its barcode
+always goes to review, and every accepted photo reaches the ERP exactly once.
+
+**Releases:** pushing a tag like `v0.2.0` (matching `version` in `pyproject.toml`)
+runs the whole CI, then creates a GitHub Release with the wheel and sdist and
+generated notes, and pushes both Docker images (amd64 + arm64, with SBOM and a
+signed build-provenance attestation) to `ghcr.io`. Dependabot opens weekly pull
+requests for outdated Python packages, actions and base images.
+
 ## Limitations
 
 - **Small test set**: 12 serial-label photos of 5 devices (3 laptops, 2 mice) and 14 product photos of 7 products. Within a group, one photo moves a rate by 7–8 points.
@@ -427,17 +474,22 @@ label_reader/              the pipeline (each stage runs with python -m label_re
     mock_erp.py             mock ERP server (generic stand-in): seed / serve / openapi
     erp_client.py           ErpClient: tokens, retries with backoff, idempotent receipts
     post_to_erp.py          match results to the manifest, outbox, post + review queue
-scripts/                   setup check, dataset tools, experiments (python -m scripts.<name>)
+scripts/                   setup check, dataset tools, experiments, CI checks (python -m scripts.<name>)
   check_setup.py   Stage 0  checks OpenCV, pyzbar, zxing-cpp, Tesseract (both paths), pandas, matplotlib
   shrink_photos.py          shrinks photos over 4032 px; originals → photos_original/
   prepare_ean_dataset.py    downloaded barcode set → photos/ean_dataset/ + review sheets
   zxing_experiment.py       zxing-cpp vs ZBar: decoder policies measured through Stage 6
-tests/                     pytest tests: barcode reader, Stage 9, asset register (fake serials only)
+  make_synthetic_dataset.py synthetic label photos with fake serials → photos/synthetic/
+  erp_e2e.py                Stage 9 end to end against a failing mock ERP (CI)
+tests/                     pytest tests: barcode reader, pipeline end to end, Stage 9, asset register, app (fake serials only)
 docs/
   asset_register.md         how app.py uses the pipeline, its database and the ERP
   erp_openapi.json          the mock ERP's API schema
-pyproject.toml             package metadata and pytest settings
-requirements.txt           exact versions (requirements-erp.txt: the ERP and test extras)
+pyproject.toml             package metadata, ruff and pytest settings
+requirements.txt           exact versions (requirements-erp.txt: ERP + tests; requirements-dev.txt: ruff, coverage, build)
+Dockerfile                 two images: the app (with Tesseract + ZBar) and the mock ERP
+docker-compose.yml         both together, with a demo job
+.github/                   CI and release workflows, Dependabot
 photos/                    input photos (not committed; see Data)
 truth.csv                  true serials (not committed); format in truth.example.csv
 output/                    everything generated (git-ignored, re-created by the scripts)

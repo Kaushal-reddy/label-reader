@@ -126,3 +126,4 @@ if __name__ == "__main__":
             failed += 1
             print(f"[FAIL] {name}: {type(e).__name__}: {e}")
     print(f"\n{len(checks) - failed}/{len(checks)} checks passed")
+    raise SystemExit(1 if failed else 0)      # so CI fails when a check does

@@ -113,7 +113,7 @@ VARIANTS = [
     ("clahe_2x",       lambda g: upscale(clahe(g), 2)),
     # Rotations: ZBar scans rows and columns, so a barcode tilted ~20-40 degrees
     # can fall between the two. Rotating brings it back to roughly straight.
-    *[(f"rot{a:+d}_2x", (lambda a: lambda g: rotate(upscale(g, 2), a))(a))
+    *[(f"rot{a:+d}_2x", (lambda a: lambda g: rotate(upscale(g, 2), a))(a))  # noqa: B023 (a is bound by the outer call)
       for a in (-30, -15, 15, 30)],
 ]
 

@@ -139,7 +139,7 @@ def read_barcodes(gray: np.ndarray) -> list[Barcode]:
 def save_box_image(img: np.ndarray, barcodes: list[Barcode], path: str) -> None:
     """Draw a green rectangle around each barcode ZBar found, for checking by eye."""
     vis = img.copy()
-    for btype, value, (x, y, w, h) in barcodes:
+    for btype, _value, (x, y, w, h) in barcodes:
         cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 4)
         cv2.putText(vis, btype, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX,
                     1.0, (0, 255, 0), 2)

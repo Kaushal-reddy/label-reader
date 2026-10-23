@@ -36,7 +36,7 @@ from collections import Counter
 import cv2
 import pandas as pd
 
-from label_reader.baseline import load_truth, normalize, out_dir_for, valid_ean13
+from label_reader.baseline import load_truth, out_dir_for, valid_ean13
 from label_reader.barcode_reader import read_barcode
 from label_reader.ocr_reader import read_ocr
 
