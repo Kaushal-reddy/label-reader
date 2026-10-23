@@ -10,6 +10,18 @@ reads a wrong EAN-13 that still passes the check digit (1 and 7, or 2 and 8,
 differ by one bar width). So a product barcode is also read with a few more
 variants, and validation only trusts it when two variants agree (CONFIRM_VARIANTS).
 
+Two decoders: the reader tries zxing-cpp first and ZBar only when zxing-cpp reads
+nothing (see read_barcode). A learned barcode detector (branch barcode-detection)
+showed ZBar's misses on the EAN set are DECODING failures: the barcode was found
+in all 403 photos, but ZBar read nothing in 178. zxing-cpp, a second decoder
+with its own binarizer, read the right number in 279 of the 403 photos (ZBar:
+216) at about a tenth of the time. ZBar stays as the backup because it reads
+some device-label Code128s zxing-cpp misses (Mouse_1). Measured with
+zxing_experiment.py.
+
+The variant matrix below (main) is still ZBar only: it shows what each image
+variant does for ZBar.
+
 This script runs EVERY variant on EVERY photo (not just until the first success),
 so you can see exactly which change rescued which photo:
   output/barcode/variant_matrix.csv   photo x variant table: serial found? (True/False)
@@ -35,6 +47,7 @@ import numpy as np
 import pandas as pd
 from pyzbar import pyzbar
 from pyzbar.pyzbar import ZBarSymbol
+import zxingcpp
 
 from baseline import found, load_truth, out_dir_for  # found: same lenient check as Stage 2
 
@@ -127,6 +140,11 @@ CONFIRM_VARIANTS = ["original", "upscale2x", "clahe_2x"]
 # a checksum alone did not stop one wrong EAN-13 read.
 SYMBOLS = [ZBarSymbol.CODE128, ZBarSymbol.CODE39, ZBarSymbol.QRCODE, ZBarSymbol.EAN13]
 
+# The same barcode types for zxing-cpp. It reports UPC-A (the 12-digit US product
+# code) as its own type with 12 digits, where ZBar gives EAN-13 with a leading 0;
+# zxing_decode() pads it, so both decoders return the same number.
+ZXING_FORMATS = zxingcpp.barcode_formats_from_str("Code128,Code39,QRCode,EAN13,UPCA")
+
 # QR codes are 2-D and ZBar always gives them quality 1, so votes only mean
 # something for the 1-D (bar) types.
 LINEAR_TYPES = {"CODE128", "CODE39", "EAN13"}
@@ -198,8 +216,56 @@ def decode(img: np.ndarray) -> list[str]:
     return resolve(pyzbar.decode(img, symbols=SYMBOLS))[0]
 
 
+def zxing_decode(img: np.ndarray) -> list[str]:
+    """The values zxing-cpp reads in img (only ones whose checksum it verified)."""
+    values = []
+    for b in zxingcpp.read_barcodes(img, formats=ZXING_FORMATS, text_mode=zxingcpp.TextMode.Plain):
+        if not b.valid:
+            continue
+        v = b.text
+        if b.format == zxingcpp.BarcodeFormat.UPCA and len(v) == 12:
+            v = "0" + v                       # the EAN-13 form ZBar returns
+        if v not in values:
+            values.append(v)
+    return values
+
+
+def zxing_read(gray: np.ndarray) -> BarcodeRead | None:
+    """zxing-cpp on every CONFIRM_VARIANT. None if no variant read anything.
+
+    zxing-cpp is fast (about 0.05-0.2 s for all three), so it always reads all
+    of them, and the counting works like confirm(): values come from the first
+    variant that read something, `agreeing` counts the variants that read each
+    one, and any other product number a variant read is a conflict. zxing-cpp
+    can misread one barcode a second way too: on 8 of 429 photos it read a wrong
+    EAN-13 at the same spot, from a box only 2-3 pixels thick. The conflict sends
+    those photos to review, as it does for ZBar's.
+    """
+    makers = dict(VARIANTS)
+    reads = [(name, zxing_decode(makers[name](gray))) for name in CONFIRM_VARIANTS]
+    first = next(((name, values) for name, values in reads if values), None)
+    if first is None:
+        return None
+    name, values = first
+    agreeing = {v: sum(v in r for _, r in reads) for v in values}
+    conflicts = list(dict.fromkeys(v for _, r in reads for v in r
+                                   if is_product_code(v) and v not in values))
+    return BarcodeRead(values, f"zxing:{name}", conflicts, agreeing)
+
+
 def read_barcode(gray: np.ndarray) -> BarcodeRead:
-    """The actual reader used by later stages.
+    """The actual reader used by later stages: zxing-cpp first, ZBar if it reads nothing.
+
+    `variant` says which decoder and image variant read it ("zxing:original",
+    or ZBar's "original" / "upscale3x").
+    Returns BarcodeRead([], None, conflicts, {}) if both decoders fail.
+    """
+    zx = zxing_read(gray)
+    return zx if zx is not None else zbar_read(gray)
+
+
+def zbar_read(gray: np.ndarray) -> BarcodeRead:
+    """ZBar on its own (the reader before zxing-cpp was added).
 
     Tries each reader variant in order and stops at the first one where a value
     survives resolve(). If that found a product barcode, confirm() re-reads it.

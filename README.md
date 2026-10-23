@@ -1,7 +1,7 @@
 # Label Reader
 
 Reads serial numbers from phone photos of IT equipment labels (laptops, mice),
-and product barcode numbers (EAN-13) from retail packaging, using classical computer vision only: **OpenCV**, **ZBar** (barcodes, via pyzbar)
+and product barcode numbers (EAN-13) from retail packaging, using classical computer vision only: **OpenCV**, **zxing-cpp** and **ZBar** (barcodes, via pyzbar)
 and **Tesseract** (OCR, via pytesseract). No deep-learning models.
 
 The design goal is **never to save a wrong serial**. A serial is accepted only
@@ -20,11 +20,11 @@ and `analyze.py` turns them into figures and confusion matrices (`output/analysi
 
 | Measure | Serial labels | Product barcodes | All |
 |---|---|---|---|
-| Accepted without a human | 6/12 | 12/14 | 18/26 (69%) |
+| Accepted without a human | 6/12 | 13/14 | 19/26 (73%) |
 | Accepted and **wrong** | **0** | **0** | **0** |
-| Precision (correct / accepted) | 6/6 | 12/12 | 18/18 (100%) |
-| Sent to review, best guess already correct | 4 of 6 | 1 of 2 | 5 of 8 |
-| Time per photo, mean / max (MacBook Air, median of 3 runs) | 1.5 s / 2.7 s | 0.8 s / 3.2 s | 1.1 s / 3.2 s |
+| Precision (correct / accepted) | 6/6 | 13/13 | 19/19 (100%) |
+| Sent to review, best guess already correct | 4 of 6 | 1 of 1 | 5 of 7 |
+| Time per photo, mean / max (MacBook Air, median of 3 runs) | 1.4 s / 2.9 s | 0.5 s / 1.7 s | 0.9 s / 2.9 s |
 
 An earlier run of just the 12 serial-label photos on a Windows 11 laptop took
 2.4 s mean, 5.3 s max.
@@ -35,11 +35,11 @@ An earlier run of just the 12 serial-label photos on a Windows 11 laptop took
 |---|---|---|---|
 | 2 – baseline | Barcode on the raw photo | 7/12 | 12/14 |
 | 2 – baseline | OCR on the raw photo (value anywhere in the text) | 3/12 | 4/14 |
-| 3 – barcode | Barcode with retries + barcode-type filter | 8/12 | 13/14 |
+| 3 – barcode | zxing-cpp, then ZBar with retries + barcode-type filter | 8/12 | 14/14 |
 | 4 – label crop | Photos where a label crop was found | 10/12 | 14/14 |
-| 4 – label crop | Barcode on the crops | 7/12 | 13/14 |
-| 5 – OCR | OCR on the crops, exact | 6/12 | 0/14 |
-| 5 – OCR | OCR on the crops, within 1 character | 9/12 | 1/14 |
+| 4 – label crop | Barcode on the crops | 7/12 | 14/14 |
+| 5 – OCR | OCR on the crops, exact | 6/12 | 8/14 |
+| 5 – OCR | OCR on the crops, within 1 character | 9/12 | 8/14 |
 
 On serial labels, cropping the label and reading it line by line **doubled**
 exact OCR reads (3 → 6). The near misses are almost all look-alike characters (letter `O` vs
@@ -47,19 +47,26 @@ digit `0`, `A` vs `4`), which is what the barcode cross-check in Stage 6 catches
 For example, on `Laptop_3` OCR read `TCNOCV…` (letter O); the barcode confirmed it
 and supplied the correct `TCN0CV…` (digit 0). (Serials are shortened in this README; see [Data](#data).)
 
-Product barcodes are the opposite case: plain OCR is useless on the small digits
-under the bars, but the barcode reader gets 13 of 14. A product barcode is
-accepted when the barcode-guided digit OCR (Stage 5) reads the same number, or
-otherwise on the barcode alone, guarded by the check digit and ZBar's vote count
-(Stage 3); that guard sent the one photo with a phantom read (`Monster_Horizontal`)
-to review.
+Product barcodes are the opposite case: plain OCR misses the small digits under
+the bars, but the barcode reader gets 14 of 14. The barcode-guided digit OCR
+(Stage 5) reads those digits exactly on 8 of 14, and then barcode and OCR agree.
+Otherwise a product barcode is accepted on the barcode alone, guarded by the check
+digit, a check for rival reads and 2 agreeing image variants (Stage 3). That guard
+sent the one photo with a phantom read (`Supplement_Horizontal`) to review.
 
-> The tables above were measured before the barcode-digit OCR (Stage 5) was
-> merged in, so its effect isn't in them yet. Measured on its own on an earlier
-> 24-photo set (full-size product photos, without the 2-variant rule), it read
-> the digits exactly on 8 of 12 product photos with no wrong numbers, and raised
-> product photos accepted by barcode + OCR agreement from 2/12 to 9/12.
-> Run `python evaluate.py` to measure the merged pipeline.
+**Adding zxing-cpp** as the first decoder (Stage 3), with ZBar as the backup,
+was measured with the same OCR on both sides (`zxing_experiment.py`):
+
+| Photos | Accepted, ZBar only | Accepted, zxing-cpp first | Accepted and wrong | Barcode step, mean / max |
+|---|---|---|---|---|
+| These 26 | 18 | 19 | 0 | 1.4 s / 3.4 s → 0.4 s / 2.2 s |
+| 403-image EAN set | 179 | 244 | 0 | 0.43 s / 1.4 s → 0.12 s / 1.3 s |
+
+(Barcode-step times: the ZBar-only times are from the experiment, the zxing-cpp
+times from `evaluate.py`, so they come from different runs.) On the EAN set the
+barcode was read on 291 photos instead of 216, and 47 photos sent to review had
+the right best guess (37 with ZBar only). The rule for accepting a product barcode on its
+own was not changed.
 
 ## How it works
 
@@ -70,6 +77,19 @@ photo ─┬─► barcode reader (Stage 3) ────────────
 ```
 
 ### Stage 3 – Barcode reading (`barcode_reader.py`)
+- **Two decoders: zxing-cpp first, ZBar only if zxing-cpp reads nothing.** A learned
+  barcode detector (branch `barcode-detection`, measured with grouped 5-fold
+  cross-validation) found the barcode in all 403 photos of the EAN set, yet ZBar read
+  nothing in 178 of them. So ZBar's misses are **decoding** failures, not failures to
+  find the barcode, and the detector's crops didn't fix them. zxing-cpp (Apache-2.0),
+  an independent decoder with its own binarizer, read the right number on 279 of the
+  403 photos (ZBar: 216) in about a tenth of the time. It missed 14 of the EAN photos
+  ZBar reads, and the Code128 on `Mouse_1`, which is why ZBar stays as the backup.
+  zxing-cpp reads the same 3 image variants as the confirmation step below and is
+  counted the same way. Like ZBar, it sometimes misreads a barcode a second way at the
+  same spot (a wrong EAN-13 on 8 of the 429 photos, from a box only 2–3 pixels thick).
+  Those reads count as conflicts, so the photo goes to review. UPC-A, which zxing-cpp
+  returns as 12 digits, is padded to the 13-digit form ZBar returns.
 - ZBar decodes the photo; if it finds nothing, the photo is **upscaled 3×** and tried again.
   Upscaling was the only retry that rescued a photo. Rotation, sharpening and
   contrast boosting were tested on every photo (the "variant matrix") and helped none.
@@ -93,8 +113,8 @@ photo ─┬─► barcode reader (Stage 3) ────────────
   variant. So when the reader finds a product barcode, it also reads it with
   `upscale2x` and `clahe_2x` (`CONFIRM_VARIANTS`). It counts how many variants read
   the same number, and any other product number they read counts as a conflict. Stage 6
-  needs **2 agreeing variants**. On that set, this accepts 178 with 0 wrong and sends 44
-  to review. Adding more variants without requiring agreement only added wrong
+  needs **2 agreeing variants**. On that set, with ZBar alone, this accepts 178 with
+  0 wrong and sends 44 to review. Adding more variants without requiring agreement only added wrong
   reads (all 9 variants, stop at first read: 226 accepted, 14 wrong).
 
 ### Stage 4 – Finding the label (`label_finder.py`)
@@ -164,7 +184,7 @@ pytesseract automatically (`check_setup.py` reports which path is in use).
 2. **OCR candidates**: text right after `SN` / `S/N:` first, then any serial-shaped word, then any valid EAN-13 number (digit groups separated by spaces or dashes are joined first).
 3. **Pattern**: a serial is 10–20 letters/digits, at least one letter and two digits. Deliberately generic, not built from the test serials. A product number must be exactly 13 digits whose last digit is the correct EAN-13 check digit; that catches any single wrong digit (but not every combination of several).
 4. **Decision**: accept when a barcode candidate and an OCR candidate agree, allowing for OCR look-alikes (O/0, I/1, A/4, …). The **barcode's** characters are saved, because barcodes carry a checksum and OCR doesn't.
-5. **Product barcodes** (EAN-13, on retail packaging): the only matching text is the same digits printed small under the bars. The barcode-digit OCR (Stage 5) reads them on many photos, and then step 4 accepts as usual. When it can't (curved packaging, glare), an EAN-13 is accepted **on its own**, but only if its check digit is valid, ZBar read it **one way only**, and **at least 2 image variants** read the same number (Stage 3). Anything else sends it to review, with the majority value as the best guess.
+5. **Product barcodes** (EAN-13, on retail packaging): the only matching text is the same digits printed small under the bars. The barcode-digit OCR (Stage 5) reads them on many photos, and then step 4 accepts as usual. When it can't (curved packaging, glare), an EAN-13 is accepted **on its own**, but only if its check digit is valid, it was read **one way only**, and **at least 2 image variants** read the same number (Stage 3). Anything else sends it to review, with the majority value as the best guess.
 
 Running OCR twice does not count as two sources: both methods use the same engine
 on the same crop and make the same mistakes. Accepting OCR-only results would have
@@ -199,6 +219,9 @@ native programs, Tesseract 5 and ZBar, which pip can't install.
    # macOS / Linux:  source .venv/bin/activate
    pip install -r requirements.txt
    ```
+
+   This also installs zxing-cpp, the second barcode decoder. Its decoder ships
+   inside the pip package, so it needs no separate install.
 
 3. **Check everything works** (all checks should say `[OK]`):
 
@@ -250,13 +273,14 @@ With `photos/` and `truth.csv` in place:
 | `python evaluate.py` | Measures every stage against `truth.csv`, and times it | `output/evaluation/summary.md` |
 | `python analyze.py` | Figures, confusion matrices and tables from `evaluate.py`'s results (see below) | `output/analysis/report.md` |
 | `python baseline.py` | Stage 2: untuned barcode + OCR on raw photos | `output/baseline/` |
-| `python barcode_reader.py` | Stage 3: barcode variant matrix | `output/barcode/variant_matrix.csv` |
+| `python barcode_reader.py` | Stage 3: barcode variant matrix (ZBar) | `output/barcode/variant_matrix.csv` |
+| `python zxing_experiment.py` | Stage 3: zxing-cpp vs ZBar, 6 decoder policies through Stage 6 (run `validate.py` first; reuses its OCR) | `output/zxing/summary.md` |
 | `python label_finder.py` | Stage 4: label boxes, crops and debug images | `output/labels/boxes/`, `crops/`, `debug/` |
 | `python ocr_reader.py` | Stage 5: OCR method comparison | `output/ocr/variant_matrix.csv`, `text/`, `lines/` |
 | `python mock_erp.py seed --job JOB-0001 --from truth.csv` | Creates (or resets) a job in the mock ERP with one manifest line per item; `--leave-out Mouse_2` drops an item | `output/erp/erp.sqlite` |
 | `python mock_erp.py serve` | Runs the mock ERP on `localhost:8000` (API docs at `/docs`); failure flags below | – |
 | `python post_to_erp.py --job JOB-0001` | Stage 9: posts accepted, matched photos to the ERP and queues the rest for review | `output/erp/posted.csv`, `review_queue.csv` |
-| `python -m pytest tests` | Tests for the mock ERP, the client and Stage 9 (fake serials only) | – |
+| `python -m pytest tests` | Tests for the barcode reader (synthetic barcodes), the mock ERP, the client, Stage 9 and the asset register (fake serials only) | – |
 
 Every stage saves its intermediate images to `output/` so failures can be inspected by eye.
 
@@ -351,7 +375,7 @@ python post_to_erp.py --job JOB-0001        # in a second terminal
 photos were both "needs review"). The server answered 15 requests with 503,
 2 with a lost-response 500 and 4 with 429, and the database still held exactly one
 receipt per photo posted. Running it again posted nothing new. This is one run with
-one seed; the tests (`python -m pytest tests`, 41 tests) repeat the same checks with
+one seed; the ERP tests (41 of the tests in `python -m pytest tests`) repeat the same checks with
 fake serials, including every line received exactly once under 50% 503s plus 50%
 lost responses, and pending posts sent after an outage.
 
@@ -368,12 +392,11 @@ computers on your network. Its database holds real serials when seeded from
   - `Laptop_1_variant`, `Mouse_2_Sideangle`: label not found (dim, small, or low-contrast print on a dark label).
   - `Laptop_2_Vertical`: OCR too far off (4 characters) to confirm the barcode.
   - Steep side angles defeat the barcode reader: the crop corrects rotation but not perspective.
-  - `Box2_Vertical`: the barcode reader finds nothing on the full photo or the crops.
-  - `Monster_Horizontal`: sent to review because ZBar also read a wrong number from the curved barcode (Stage 3); the best guess is correct.
-- **Barcode-only acceptance for products**: product barcodes are accepted without a second source. The check digit, vote margin and 2-variant agreement stopped every wrong read seen (1 in the 14 product photos, 8 in the 403-image EAN set), but the agreement rule was chosen on that same EAN set, so it hasn't been tested on unseen photos. A wrong number read the same way by two variants would still be accepted. Confirming also costs time: a product photo is decoded 3 times even when the first read works.
+  - `Supplement_Horizontal`: sent to review because zxing-cpp also read a wrong number at the same spot (Stage 3); the best guess is correct.
+- **Barcode-only acceptance for products**: product barcodes are accepted without a second source. The check digit, vote margin and 2-variant agreement stopped every wrong read seen (ZBar: 1 in the 14 product photos and 8 in the 403-image EAN set; zxing-cpp: 3 and 5), but the agreement rule was chosen on that same EAN set, and the zxing-cpp-first order was chosen after measuring on the same photos, so neither has been tested on unseen photos. A wrong number read the same way by two variants would still be accepted. Confirming also costs time: zxing-cpp always reads 3 image variants, and ZBar re-reads a product barcode it found.
 - **Image quality matters most**: the first set of photos had been downscaled to 900×1600 in transfer. Replacing them with the camera originals (4032×2268) did more for barcode reading than any code change.
   Bigger isn't better either: shrinking the 36-megapixel product photos to 4032×2268 made the pipeline 1.7× faster (worst case 9.8 s → 3.3 s) and let one more barcode decode. 3024 px or JPEG quality 75 each lost a serial-label photo, and 2016 px lost several (measured once with the full pipeline; the table is in `shrink_photos.py`).
-- **Speed**: about 1.1 s per photo on a MacBook Air (3.2 s worst case). On serial labels the biggest parts are OCR and the barcode retry, which decodes a 3× upscale of the full photo when the first try fails.
+- **Speed**: about 0.9 s per photo on a MacBook Air (2.9 s worst case). On serial labels the biggest parts are OCR and, when zxing-cpp reads nothing, ZBar's retry, which decodes a 3× upscale of the full photo.
 
 ## What I would do next
 
@@ -385,10 +408,11 @@ computers on your network. Its database holds real serials when seeded from
 ## Project layout
 
 ```
-check_setup.py     Stage 0  checks OpenCV, pyzbar, Tesseract (both paths), pandas, matplotlib
+check_setup.py     Stage 0  checks OpenCV, pyzbar, zxing-cpp, Tesseract (both paths), pandas, matplotlib
 native_libs.py     setup    finds Tesseract and ZBar on Windows / macOS / Linux
 baseline.py        Stage 2  untuned barcode + OCR on raw photos; shared helpers normalize(), found(), valid_ean13(), load_truth()
-barcode_reader.py  Stage 3  read_barcode(): retries + barcode-type filter
+barcode_reader.py  Stage 3  read_barcode(): zxing-cpp, then ZBar with retries + barcode-type filter
+zxing_experiment.py Stage 3  zxing-cpp vs ZBar: decoder policies measured through Stage 6
 label_finder.py    Stage 4  find_label_boxes(), crop_rotated()
 ocr_reader.py      Stage 5  read_ocr(): whole-crop + line-by-line + barcode-digit OCR
 tess_direct.py     Stage 5  TessEngine: Tesseract's C API via ctypes (no process per call)
@@ -400,7 +424,7 @@ prepare_ean_dataset.py utility  downloaded barcode set → photos/ean_dataset/ +
 mock_erp.py        Stage 9  mock ERP server (generic stand-in): seed / serve / openapi
 erp_client.py      Stage 9  ErpClient: tokens, retries with backoff, idempotent receipts
 post_to_erp.py     Stage 9  match results to the manifest, outbox, post + review queue
-tests/             pytest tests for Stage 9 (fake serials only)
+tests/             pytest tests: barcode reader, Stage 9, asset register (fake serials only)
 docs/erp_openapi.json      the mock ERP's API schema
 photos/            input photos (not committed; see Data)
 truth.csv          true serials (not committed); format in truth.example.csv

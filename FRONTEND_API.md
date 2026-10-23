@@ -38,7 +38,7 @@ read_barcode(gray: np.ndarray) -> BarcodeRead
 ```python
 class BarcodeRead(NamedTuple):
     values: list[str]          # decoded values that survived the vote; [] if none
-    variant: str | None        # "original" or "upscale3x"; None if nothing read  (unused by app)
+    variant: str | None        # "zxing:original" etc. (zxing-cpp), or ZBar's "original" / "upscale3x"; None if nothing read  (unused by app)
     conflicts: list[str]       # other values read from the same barcode and rejected
     agreeing: dict[str, int]   # value -> number of image variants that read it (1-3)
 ```
