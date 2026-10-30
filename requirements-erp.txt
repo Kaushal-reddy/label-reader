@@ -2,7 +2,7 @@
 # and their tests. The rest of the pipeline doesn't need them.
 #
 #   pip install -r requirements.txt -r requirements-erp.txt
-fastapi==0.156.8
+fastapi==0.162.0
 uvicorn==0.54.0
 httpx==0.28.1
-pytest==9.1.1
+pytest==9.2.0
